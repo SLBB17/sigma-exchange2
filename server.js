@@ -382,7 +382,7 @@ app.get("/api/portfolio", requireAuth, asyncRoute(async (req, res) => {
       `SELECT h.symbol, h.quantity, h.average_price, a.name, a.price
        FROM holdings h
        LEFT JOIN market_assets a ON a.symbol = h.symbol
-       WHERE h.user_id = $1 ORDER BY h.symbol`,
+       WHERE h.user_id = $1 AND h.symbol IS NOT NULL ORDER BY h.symbol`,
       [req.session.userId]
     )
   ]);
