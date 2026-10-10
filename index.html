@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b0d14">
+  <title>Sigma Exchange</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23a78bfa'/%3E%3Ctext x='32' y='47' font-size='42' text-anchor='middle' fill='%23120d25' font-family='sans-serif' font-weight='900'%3E%CE%A3%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <noscript>Active JavaScript pour utiliser Sigma Exchange.</noscript>
+
+  <header class="topbar">
+    <a class="brand" href="#"><span class="brand-mark">Σ</span> SIGMA <span class="brand-light">EXCHANGE</span></a>
+    <div id="account-area">
+      <button type="button" class="button secondary" id="show-login">Connexion</button>
+      <button type="button" class="button primary" id="show-register">Créer un compte</button>
+    </div>
+  </header>
+
+  <main class="container">
+    <section class="hero">
+      <div>
+        <div class="eyebrow"><span class="status-dot"></span> UNIVERS SIMULÉ</div>
+        <h1>Joue sur le marché.<br><span>Construis ta collection.</span></h1>
+        <p>Investis avec une monnaie virtuelle, collectionne des cartes et développe ton profil.</p>
+      </div>
+      <div class="hero-symbol">Σ</div>
+    </section>
+
+    <section id="auth-panel" class="panel auth-panel hidden">
+      <div class="section-heading">
+        <div><div class="eyebrow">ESPACE MEMBRE</div><h2 id="auth-title">Connexion</h2></div>
+        <button type="button" class="button secondary" id="close-auth">Fermer</button>
+      </div>
+      <form id="auth-form">
+        <label for="username">Pseudo</label>
+        <input id="username" name="username" minlength="3" maxlength="30" required autocomplete="username">
+        <label for="password">Mot de passe</label>
+        <input id="password" name="password" type="password" minlength="8" maxlength="128" required autocomplete="current-password">
+        <button type="submit" class="button primary full" id="auth-submit">Se connecter</button>
+        <p id="auth-message" class="message" role="alert"></p>
+      </form>
+    </section>
+
+    <section id="welcome-panel" class="panel">
+      <div class="section-heading">
+        <div><div class="eyebrow">BIENVENUE</div><h2>Ton univers financier</h2></div>
+        <span class="pill">Monnaie virtuelle</span>
+      </div>
+      <p>Connecte-toi ou crée un compte pour accéder à ton portefeuille, à la boutique et à ta collection.</p>
+    </section>
+
+    <section id="dashboard" class="hidden">
+      <div class="section-heading">
+        <div><div class="eyebrow">TABLEAU DE BORD</div><h2>Bonjour, <span id="user-name">investisseur</span></h2></div>
+        <button type="button" id="logout" class="button secondary">Déconnexion</button>
+      </div>
+
+      <div class="stats-grid">
+        <article class="stat-card"><span>Solde virtuel</span><strong id="balance">—</strong><small>Crédits Sigma</small></article>
+        <article class="stat-card"><span>Actifs en portefeuille</span><strong id="holding-count">0</strong><small>Lignes détenues</small></article>
+        <article class="stat-card"><span>Cartes collectionnées</span><strong id="card-count">0</strong><small>Cartes au total</small></article>
+      </div>
+
+      <nav class="tabs" aria-label="Navigation">
+        <button type="button" class="tab active" data-page="market">Marché</button>
+        <button type="button" class="tab" data-page="shop">Boutique</button>
+        <button type="button" class="tab" data-page="collection">Collection</button>
+        <button type="button" class="tab" data-page="titles">Titres</button>
+        <button type="button" class="tab hidden" id="admin-tab" data-page="admin">Administration</button>
+      </nav>
+
+      <section class="page-section" id="page-market">
+        <div class="section-heading"><div><div class="eyebrow">MARCHÉ VIRTUEL</div><h2>Actifs disponibles</h2></div></div>
+        <div id="market-list" class="asset-grid"></div>
+        <p class="muted">Les cours et les opérations sont simulés. Aucun argent réel n'est engagé.</p>
+      </section>
+
+      <section class="page-section hidden" id="page-shop">
+        <div class="section-heading"><div><div class="eyebrow">PACKS DE COLLECTION</div><h2>Boutique Sigma</h2></div><span class="pill">Stock renouvelable</span></div>
+        <div id="shop-list" class="shop-grid"></div>
+      </section>
+
+      <section class="page-section hidden" id="page-collection">
+        <div class="section-heading"><div><div class="eyebrow">INVENTAIRE</div><h2>Ma collection</h2></div></div>
+        <div id="collection-list" class="card-grid"></div>
+      </section>
+
+      <section class="page-section hidden" id="page-titles">
+        <div class="section-heading"><div><div class="eyebrow">PROGRESSION</div><h2>Mes titres</h2></div></div>
+        <div id="titles-list" class="title-grid"></div>
+      </section>
+
+      <section class="page-section hidden" id="page-admin">
+        <div class="section-heading"><div><div class="eyebrow">CONTRÔLE</div><h2>Administration</h2></div></div>
+        <button type="button" id="restock" class="button primary">Renouveler le stock</button>
+        <div id="admin-message" class="message" role="status"></div>
+        <h3>Utilisateurs</h3>
+        <div id="admin-users"></div>
+      </section>
+    </section>
+
+    <p id="page-message" class="message" role="status"></p>
+  </main>
+
+  <footer><span>Σ SIGMA EXCHANGE</span><span>Économie virtuelle · Apprends en jouant</span></footer>
+</body>
+</html>
