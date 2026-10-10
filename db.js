@@ -32,6 +32,7 @@ async function safeRollback(client) {
 
 async function initDb() {
   const client = await pool.connect();
+  const droppedPkTables = new Set();
 
   try {
     await client.query("BEGIN");
@@ -172,19 +173,101 @@ async function initDb() {
       );
     }
 
-    // Anciennes colonnes (ex. first_name, email, phone d'une version
-    // précédente) : si elles sont obligatoires sans valeur par défaut,
-    // elles bloquent les nouvelles insertions. On les rend facultatives
-    // sans les supprimer ni toucher aux données. Les colonnes de clé
-    // primaire et les colonnes connues de l'application sont ignorées.
+    // ------------------------------------------------------------------
+    // Réparation des anciennes tables (versions précédentes du site).
+    // Rien n'est supprimé : on assouplit seulement ce qui bloque.
+    // ------------------------------------------------------------------
+
+    // 1) Colonnes trop étroites ou de mauvais type pour les nouvelles
+    //    valeurs (quantités décimales, montants à 2 décimales, etc.).
+    const varcharMinimums = [
+      ["users", "username", 50],
+      ["users", "role", 20],
+      ["cards", "rarity", 30],
+      ["holdings", "symbol", 20],
+      ["market_assets", "symbol", 20],
+      ["transactions", "type", 30]
+    ];
+
+    for (const [table, column, minLength] of varcharMinimums) {
+      const info = await client.query(
+        `SELECT character_maximum_length
+         FROM information_schema.columns
+         WHERE table_schema = current_schema()
+           AND table_name = $1 AND column_name = $2
+           AND data_type = 'character varying'`,
+        [table, column]
+      );
+      const length = info.rows[0]?.character_maximum_length;
+
+      if (length && length < minLength) {
+        await client.query(
+          `ALTER TABLE "${table}" ALTER COLUMN "${column}" TYPE VARCHAR(${minLength})`
+        );
+        console.log(`Colonne élargie : ${table}.${column} -> VARCHAR(${minLength})`);
+      }
+    }
+
+    const numericTargets = [
+      ["users", "balance", 15, 2],
+      ["shop_packs", "price", 15, 2],
+      ["holdings", "quantity", 20, 8],
+      ["holdings", "average_price", 20, 8],
+      ["market_assets", "price", 20, 8]
+    ];
+
+    for (const [table, column, precision, scale] of numericTargets) {
+      const info = await client.query(
+        `SELECT data_type, numeric_precision, numeric_scale
+         FROM information_schema.columns
+         WHERE table_schema = current_schema()
+           AND table_name = $1 AND column_name = $2`,
+        [table, column]
+      );
+      const col = info.rows[0];
+      if (!col) continue;
+
+      const isInteger = ["smallint", "integer", "bigint"].includes(col.data_type);
+      const isNarrowNumeric =
+        col.data_type === "numeric" &&
+        col.numeric_scale !== null &&
+        (col.numeric_scale < scale || col.numeric_precision < precision);
+
+      if (isInteger || isNarrowNumeric) {
+        const integerDigits = isInteger
+          ? 19
+          : Number(col.numeric_precision) - Number(col.numeric_scale);
+        const newPrecision = Math.max(precision, integerDigits + scale);
+
+        await client.query(
+          `ALTER TABLE "${table}" ALTER COLUMN "${column}"
+           TYPE NUMERIC(${newPrecision},${scale}) USING "${column}"::numeric`
+        );
+        console.log(`Colonne élargie : ${table}.${column} -> NUMERIC(${newPrecision},${scale})`);
+      }
+    }
+
+    // 2) Anciennes colonnes obligatoires sans valeur par défaut
+    //    (ex. first_name, email, title_key...) : elles bloqueraient les
+    //    nouvelles insertions. Si l'une d'elles fait partie d'une clé
+    //    primaire, on retire cette clé primaire (les lignes restent), puis
+    //    on rend la colonne facultative. Un index d'unicité équivalent est
+    //    recréé plus bas pour les tables concernées.
     const knownColumns = new Map();
     for (const [table, column] of migrations) {
       if (!knownColumns.has(table)) knownColumns.set(table, new Set());
       knownColumns.get(table).add(column);
     }
 
-    const legacy = await client.query(
-      `SELECT c.relname AS table_name, a.attname AS column_name
+    const blocking = await client.query(
+      `SELECT c.relname AS table_name,
+              a.attname AS column_name,
+              (SELECT con.conname
+               FROM pg_constraint con
+               WHERE con.conrelid = a.attrelid
+                 AND con.contype = 'p'
+                 AND a.attnum = ANY(con.conkey)
+               LIMIT 1) AS pk_name
        FROM pg_attribute a
        JOIN pg_class c ON c.oid = a.attrelid
        JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -194,23 +277,52 @@ async function initDb() {
          AND NOT a.attisdropped
          AND a.attnotnull
          AND NOT a.atthasdef
-         AND a.attidentity = ''
-         AND NOT EXISTS (
-           SELECT 1 FROM pg_index i
-           WHERE i.indrelid = a.attrelid
-             AND i.indisprimary
-             AND a.attnum = ANY(i.indkey)
-         )`,
+         AND a.attidentity = ''`,
       [Array.from(knownColumns.keys())]
     );
 
-    for (const { table_name, column_name } of legacy.rows) {
-      if (knownColumns.get(table_name)?.has(column_name)) continue;
+    for (const row of blocking.rows) {
+      if (knownColumns.get(row.table_name)?.has(row.column_name)) continue;
+
+      if (row.pk_name && !droppedPkTables.has(row.table_name)) {
+        await client.query(
+          `ALTER TABLE "${row.table_name}" DROP CONSTRAINT "${row.pk_name}"`
+        );
+        droppedPkTables.add(row.table_name);
+        console.log(`Ancienne clé primaire retirée : ${row.table_name}.${row.pk_name}`);
+      }
 
       await client.query(
-        `ALTER TABLE "${table_name}" ALTER COLUMN "${column_name}" DROP NOT NULL`
+        `ALTER TABLE "${row.table_name}" ALTER COLUMN "${row.column_name}" DROP NOT NULL`
       );
-      console.log(`Ancienne colonne rendue facultative : ${table_name}.${column_name}`);
+      console.log(`Ancienne colonne rendue facultative : ${row.table_name}.${row.column_name}`);
+    }
+
+    // 3) Récupère les anciens titres débloqués (title_key -> title_id)
+    //    pour que les titres historiques restent visibles.
+    const columnExists = async (table, column) => {
+      const found = await client.query(
+        `SELECT 1 FROM information_schema.columns
+         WHERE table_schema = current_schema()
+           AND table_name = $1 AND column_name = $2`,
+        [table, column]
+      );
+      return found.rows.length > 0;
+    };
+
+    if (await columnExists("user_titles", "title_key")) {
+      for (const keyColumn of ["key", "title_key"]) {
+        if (await columnExists("titles", keyColumn)) {
+          await client.query(
+            `UPDATE user_titles ut
+             SET title_id = t.id
+             FROM titles t
+             WHERE ut.title_id IS NULL
+               AND ut.title_key::text = t."${keyColumn}"::text`
+          );
+          break;
+        }
+      }
     }
 
     // Données initiales : ajoutées seulement si elles n'existent pas.
@@ -297,6 +409,28 @@ async function initDb() {
     throw err;
   } finally {
     client.release();
+  }
+
+  // Remplace les clés primaires retirées par des index d'unicité sur les
+  // colonnes que le nouveau code utilise.
+  const replacementKeys = {
+    holdings: ["user_id", "symbol"],
+    user_cards: ["user_id", "card_id"],
+    user_titles: ["user_id", "title_id"]
+  };
+
+  for (const table of droppedPkTables) {
+    const columns = replacementKeys[table];
+    if (!columns) continue;
+
+    try {
+      await pool.query(
+        `CREATE UNIQUE INDEX IF NOT EXISTS "${table}_unique_idx"
+         ON "${table}" (${columns.map(c => `"${c}"`).join(", ")})`
+      );
+    } catch (err) {
+      console.warn(`Index d'unicité non créé sur ${table} :`, err.message);
+    }
   }
 
   // Empêche deux comptes « Bob » et « bob » créés au même instant.
