@@ -1,0 +1,23 @@
+
+{
+  "name": "sigma-exchange",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Sigma Exchange - simulateur boursier et jeu de cartes à collectionner",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.2",
+    "connect-pg-simple": "^10.0.0",
+    "dotenv": "^16.6.1",
+    "express": "^5.1.0",
+    "express-session": "^1.18.2",
+    "pg": "^8.13.1"
+  }
+}
