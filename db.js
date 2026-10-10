@@ -172,6 +172,47 @@ async function initDb() {
       );
     }
 
+    // Anciennes colonnes (ex. first_name, email, phone d'une version
+    // précédente) : si elles sont obligatoires sans valeur par défaut,
+    // elles bloquent les nouvelles insertions. On les rend facultatives
+    // sans les supprimer ni toucher aux données. Les colonnes de clé
+    // primaire et les colonnes connues de l'application sont ignorées.
+    const knownColumns = new Map();
+    for (const [table, column] of migrations) {
+      if (!knownColumns.has(table)) knownColumns.set(table, new Set());
+      knownColumns.get(table).add(column);
+    }
+
+    const legacy = await client.query(
+      `SELECT c.relname AS table_name, a.attname AS column_name
+       FROM pg_attribute a
+       JOIN pg_class c ON c.oid = a.attrelid
+       JOIN pg_namespace n ON n.oid = c.relnamespace
+       WHERE n.nspname = current_schema()
+         AND c.relname = ANY($1::text[])
+         AND a.attnum > 0
+         AND NOT a.attisdropped
+         AND a.attnotnull
+         AND NOT a.atthasdef
+         AND a.attidentity = ''
+         AND NOT EXISTS (
+           SELECT 1 FROM pg_index i
+           WHERE i.indrelid = a.attrelid
+             AND i.indisprimary
+             AND a.attnum = ANY(i.indkey)
+         )`,
+      [Array.from(knownColumns.keys())]
+    );
+
+    for (const { table_name, column_name } of legacy.rows) {
+      if (knownColumns.get(table_name)?.has(column_name)) continue;
+
+      await client.query(
+        `ALTER TABLE "${table_name}" ALTER COLUMN "${column_name}" DROP NOT NULL`
+      );
+      console.log(`Ancienne colonne rendue facultative : ${table_name}.${column_name}`);
+    }
+
     // Données initiales : ajoutées seulement si elles n'existent pas.
     // Les casts explicites (::text, ::numeric, ::int) évitent l'erreur
     // PostgreSQL « inconsistent types deduced for parameter $1 » quand
