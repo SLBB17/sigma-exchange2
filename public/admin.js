@@ -6,6 +6,7 @@ const ADMIN_SECTIONS = [
   ["packs", "Boutique"],
   ["market", "Marché"],
   ["cards", "Cartes"],
+  ["bazaar", "Bazar"],
   ["comms", "Communication"],
   ["logs", "Journal"]
 ];
@@ -25,7 +26,8 @@ const ADMIN_ACTIONS = {
   "card.update": "Carte modifiée",
   "announcement.set": "Annonce modifiée",
   "chat.delete": "Message supprimé",
-  "chat.clear": "Chat vidé"
+  "chat.clear": "Chat vidé",
+  "listing.cancel": "Annonce du bazar retirée"
 };
 
 let adminSection = "dashboard";
@@ -34,14 +36,6 @@ let adminUserSearch = "";
 let adminCardsCache = null;
 let adminTitlesCache = null;
 let adminAssetsCache = [];
-
-function debounce(callback, delay) {
-  let timer = null;
-  return (...args) => {
-    clearTimeout(timer);
-    timer = setTimeout(() => callback(...args), delay);
-  };
-}
 
 function isAdminUser() {
   return Boolean(state.user && state.user.role === "admin");
@@ -139,6 +133,7 @@ async function loadAdminSection() {
     packs: adminPacks,
     market: adminMarket,
     cards: adminCards,
+    bazaar: adminBazaar,
     comms: adminComms,
     logs: adminLogs
   };
@@ -479,6 +474,34 @@ async function adminCards(box) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Bazar de cartes                                                     */
+/* ------------------------------------------------------------------ */
+
+const LISTING_STATUS = { active: "En vente", sold: "Vendue", cancelled: "Retirée" };
+
+async function adminBazaar(box) {
+  const data = await api("/api/admin/listings");
+
+  box.innerHTML = data.listings.length
+    ? `<p class="muted">Les ${data.listings.length} dernières annonces. Retirer une annonce rend la carte à son vendeur.</p>
+       <div class="table-wrap"><table class="data-table">
+        <thead><tr><th>Carte</th><th>Vendeur</th><th>Prix</th><th>Statut</th><th>Acheteur</th><th>Date</th><th></th></tr></thead>
+        <tbody>${data.listings.map((item) => `<tr>
+          <td>${escapeHtml(item.card.emoji)} <strong>${escapeHtml(item.card.name)}</strong>
+            <span class="pill" style="border-color:${RARITY[rarityOf(item.card)].color};color:${RARITY[rarityOf(item.card)].color}">${RARITY[rarityOf(item.card)].label}</span></td>
+          <td>${escapeHtml(item.seller.username)}</td>
+          <td>${money(item.price)}</td>
+          <td>${escapeHtml(LISTING_STATUS[item.status] || item.status)}</td>
+          <td>${item.buyer ? escapeHtml(item.buyer) : "—"}</td>
+          <td>${escapeHtml(fmtDateTime(item.sold_at || item.created_at))}</td>
+          <td class="actions">${item.status === "active"
+            ? `<button type="button" class="button secondary small" data-admin="listing-cancel" data-id="${Number(item.id)}">Retirer</button>`
+            : ""}</td>
+        </tr>`).join("")}</tbody></table></div>`
+    : '<p class="muted">Aucune annonce pour le moment.</p>';
+}
+
+/* ------------------------------------------------------------------ */
 /* Communication et journal                                            */
 /* ------------------------------------------------------------------ */
 
@@ -695,6 +718,11 @@ async function onAdminClick(event) {
     } else if (action === "event-preset") {
       const input = $('[data-field="percent"]', button.closest("form"));
       input.value = button.dataset.percent;
+    } else if (action === "listing-cancel") {
+      if (!confirm("Retirer cette annonce ? La carte retournera chez son vendeur.")) return;
+      await api(`/api/admin/listings/${id}/cancel`, { method: "POST" });
+      toast("Annonce retirée.", "success");
+      await loadAdminSection();
     } else if (action === "chat-clear") {
       if (!confirm("Supprimer tous les messages du chat ?")) return;
       const result = await api("/api/admin/chat/clear", { method: "POST" });
