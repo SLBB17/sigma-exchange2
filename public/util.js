@@ -13,6 +13,8 @@ const state = {
   cards: [],
   packs: [],
   titles: [],
+  friends: { friends: [], incoming: [], outgoing: [] },
+  bazaar: { view: "buy", filter: { search: "", rarity: "", seller: "all", sort: "price-asc" } },
   range: "6h",
   marketFilter: { search: "", sector: "", sort: "name" },
   collectionFilter: { search: "", rarity: "", ownedOnly: false }
@@ -63,6 +65,25 @@ function fmtDateTime(value) {
   return date.toLocaleString("fr-FR", {
     day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit"
   });
+}
+
+function fmtAgo(value) {
+  if (!value) return "il y a longtemps";
+  const seconds = Math.max(0, Math.round((Date.now() - new Date(value).getTime()) / 1000));
+  if (seconds < 90) return "à l'instant";
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `il y a ${minutes} min`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `il y a ${hours} h`;
+  return `il y a ${Math.round(hours / 24)} j`;
+}
+
+function debounce(callback, delay) {
+  let timer = null;
+  return (...args) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => callback(...args), delay);
+  };
 }
 
 function fmtTime(value) {
