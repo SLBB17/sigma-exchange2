@@ -421,3 +421,51 @@ button.collect-card:hover { transform: translateY(-3px); border-color: var(--acc
   .tab { white-space: nowrap; }
   .card-detail-art { flex-basis: 180px; }
 }
+
+/* ===== Bazar ===== */
+.badge {
+  display: inline-block; min-width: 18px; padding: 1px 6px; margin-left: 4px;
+  border-radius: 20px; background: #e11d48; color: #fff; font-size: 11px; font-weight: 800; text-align: center;
+}
+.listing-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(175px, 1fr)); gap: 16px; }
+.listing {
+  display: flex; flex-direction: column; gap: 10px; padding: 10px;
+  background: linear-gradient(145deg, var(--panel), #101520); border: 1px solid var(--border); border-radius: 16px;
+}
+.listing-info { display: flex; flex-direction: column; gap: 2px; text-align: center; }
+.listing-price { font-size: 17px; }
+.listing .button.full { margin-top: auto; }
+.listing .pill { align-self: center; margin-top: auto; }
+.listing-actions { display: flex; flex-direction: column; gap: 6px; margin-top: auto; }
+.friend-tag { color: #bbf7d0; font-weight: 700; }
+.history-list, .request-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.history-list li { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+.history-list li > :nth-child(3) { margin-left: auto; }
+.pill.sold { color: #bbf7d0; background: #052e16; border-color: #166534; }
+.pill.bought { color: #bfdbfe; background: #0c1e3a; border-color: #1d4ed8; }
+.card-grid.compact { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; }
+
+/* ===== Amis ===== */
+.friend-form { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 20px; }
+.friend-form input { flex: 1 1 240px; width: auto; }
+.friends-title { margin-top: 8px; }
+.friend-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
+.friend-card {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 16px;
+  background: linear-gradient(145deg, var(--panel), #101520); border: 1px solid var(--border); border-radius: 16px;
+}
+.friend-info { display: flex; flex-direction: column; flex: 1 1 120px; min-width: 0; }
+.friend-info strong { overflow: hidden; text-overflow: ellipsis; }
+.friend-actions { display: flex; gap: 6px; flex-wrap: wrap; width: 100%; }
+.avatar {
+  display: inline-grid; place-items: center; flex: 0 0 auto; border-radius: 50%;
+  color: #fff; font-weight: 800; font-size: 1.1em; text-transform: uppercase;
+}
+.presence { display: inline-block; width: 9px; height: 9px; margin-right: 6px; border-radius: 50%; background: #64748b; }
+.presence.on { background: #22c55e; box-shadow: 0 0 8px #22c55e; }
+.request-list li { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.request-list li > span:nth-child(2) { display: flex; flex-direction: column; flex: 1 1 120px; }
+.row-actions { display: flex; gap: 6px; }
+.profile-head { display: flex; align-items: center; gap: 16px; margin-bottom: 14px; padding-right: 36px; }
+.profile-head h2 { margin: 0 0 4px; }
+.profile-head p { margin: 0; }
