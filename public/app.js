@@ -653,9 +653,21 @@ async function buyPack(packId, button) {
     updateStats();
     toastTitles(result.newTitles);
     openPackReveal(pack, result);
+
+    // Met à jour le stock affiché derrière la fenêtre d'ouverture.
+    loadShop().catch(() => {});
   } catch (error) {
     toastError(error);
     setBusy(button, false);
+
+    // Le stock ou le solde a pu changer : on remet l'affichage à jour.
+    loadShop().catch(() => {});
+    api("/api/me").then((data) => {
+      if (data.user && state.user) {
+        state.user.balance = data.user.balance;
+        updateStats();
+      }
+    }).catch(() => {});
   }
 }
 
