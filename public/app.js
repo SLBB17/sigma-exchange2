@@ -87,6 +87,8 @@ function showTab(name, { load = true } = {}) {
     shop: loadShop,
     collection: loadCollection,
     titles: loadTitles,
+    bazaar: loadBazaar,
+    friends: loadFriends,
     chat: startChat,
     admin: loadAdminPanel
   };
@@ -102,6 +104,9 @@ function resetState() {
   state.cards = [];
   state.packs = [];
   state.titles = [];
+  state.friends = { friends: [], incoming: [], outgoing: [] };
+  state.bazaar.view = "buy";
+  updateFriendsBadge();
 }
 
 function stopTimers() {
@@ -117,6 +122,7 @@ function startTimers() {
 
     try {
       await Promise.all([loadMarket(), loadPortfolio()]);
+      loadFriends().catch(() => {});
 
       if (openCompanySymbol) {
         updateCompanyDynamic();
@@ -144,7 +150,8 @@ async function refreshAll() {
     loadPortfolio(),
     loadShop(),
     loadCollection(),
-    loadTitles()
+    loadTitles(),
+    loadFriends()
   ]);
 
   const failure = results.find((result) => result.status === "rejected");
@@ -948,6 +955,8 @@ function setupEvents() {
   });
 
   setupChat();
+  setupBazaar();
+  setupFriends();
   setupAdmin();
 }
 
