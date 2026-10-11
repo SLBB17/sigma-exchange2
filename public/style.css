@@ -469,3 +469,13 @@ button.collect-card:hover { transform: translateY(-3px); border-color: var(--acc
 .profile-head { display: flex; align-items: center; gap: 16px; margin-bottom: 14px; padding-right: 36px; }
 .profile-head h2 { margin: 0 0 4px; }
 .profile-head p { margin: 0; }
+
+/* Cartes cliquables du bazar */
+.listing-art {
+  display: block; width: 100%; padding: 0; border: 0; background: none;
+  color: inherit; border-radius: 16px; cursor: pointer; transition: transform .15s;
+}
+.listing-art:hover { transform: translateY(-3px) scale(1.02); }
+.listing-art:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.detail-price { margin: 14px 0 4px; font-size: 28px; font-weight: 800; color: var(--text); }
+.detail-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
