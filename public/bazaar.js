@@ -33,7 +33,7 @@ async function loadBazaar() {
 
 function listingTile(item) {
   return `<article class="listing">
-    ${cardTile(item.card)}
+    <button type="button" class="listing-art" data-detail="${Number(item.id)}" aria-label="Voir la carte ${escapeHtml(item.card.name)}">${cardTile(item.card)}</button>
     <div class="listing-info">
       <strong class="listing-price">${money(item.price)}</strong>
       <span class="muted">${item.isMine ? "Ton annonce" : `par ${escapeHtml(item.seller.username)}`}${item.isFriend ? ' · <span class="friend-tag">ami</span>' : ""}</span>
@@ -67,12 +67,13 @@ async function refreshCardData() {
   updateStats();
 }
 
+// Renvoie true si l'achat a réussi.
 async function buyListing(id, button) {
   const item = bazaarListings.find((listing) => listing.id === id);
-  if (!item) return;
+  if (!item) return false;
 
   const message = `Acheter « ${item.card.name} » à ${item.seller.username} pour ${money(item.price)} ?`;
-  if (!confirm(message)) return;
+  if (!confirm(message)) return false;
 
   setBusy(button, true);
 
@@ -88,10 +89,12 @@ async function buyListing(id, button) {
     toastTitles(result.newTitles);
 
     await Promise.allSettled([loadBazaarListings(), refreshCardData()]);
+    return true;
   } catch (error) {
     toastError(error);
     setBusy(button, false);
     loadBazaarListings().catch(() => {});
+    return false;
   }
 }
 
@@ -99,7 +102,7 @@ async function buyListing(id, button) {
 
 function myListingTile(item) {
   return `<article class="listing">
-    ${cardTile(item.card)}
+    <button type="button" class="listing-art" data-detail="${Number(item.id)}" aria-label="Voir la carte ${escapeHtml(item.card.name)}">${cardTile(item.card)}</button>
     <div class="listing-info">
       <strong class="listing-price">${money(item.price)}</strong>
       <span class="muted">En vente depuis ${escapeHtml(fmtAgo(item.created_at))}</span>
@@ -154,12 +157,13 @@ async function loadMyListings() {
   renderMyListings();
 }
 
+// Renvoie true si le prix a été modifié.
 async function repriceListing(id) {
   const item = bazaarMine.active.find((listing) => listing.id === id);
-  if (!item) return;
+  if (!item) return false;
 
   const answer = prompt("Nouveau prix en crédits (entre 1 et 1 000 000) :", String(Number(item.price)));
-  if (answer === null) return;
+  if (answer === null) return false;
 
   try {
     await api(`/api/bazaar/${id}`, {
@@ -168,13 +172,16 @@ async function repriceListing(id) {
     });
     toast("Prix modifié.", "success");
     await loadMyListings();
+    return true;
   } catch (error) {
     toastError(error);
+    return false;
   }
 }
 
+// Renvoie true si l'annonce a été retirée.
 async function cancelMyListing(id, button) {
-  if (!confirm("Retirer cette annonce ? La carte reviendra dans ta collection.")) return;
+  if (!confirm("Retirer cette annonce ? La carte reviendra dans ta collection.")) return false;
 
   setBusy(button, true);
 
@@ -182,9 +189,11 @@ async function cancelMyListing(id, button) {
     await api(`/api/bazaar/${id}/cancel`, { method: "POST" });
     toast("Annonce retirée, la carte est revenue dans ta collection.", "success");
     await Promise.allSettled([loadMyListings(), refreshCardData()]);
+    return true;
   } catch (error) {
     toastError(error);
     setBusy(button, false);
+    return false;
   }
 }
 
@@ -295,6 +304,50 @@ async function openSellModal(cardId) {
   });
 }
 
+/* ----- Fiche détaillée d'une annonce ----- */
+
+function openListingDetail(item, mine) {
+  const key = rarityOf(item.card);
+  const rarity = RARITY[key];
+
+  openModal(`
+    <div class="card-detail listing-detail">
+      <div class="card-detail-art">${cardTile(item.card)}</div>
+      <div class="card-detail-info">
+        <h2>${escapeHtml(item.card.name)}</h2>
+        <p>
+          <span class="pill" style="border-color:${rarity.color};color:${rarity.color}">${rarity.label}</span>
+          ${item.card.series ? `<span class="pill">${escapeHtml(item.card.series)}</span>` : ""}
+        </p>
+        <p>${escapeHtml(item.card.description)}</p>
+        <p class="detail-price">${money(item.price)}</p>
+        <p class="muted">${mine
+          ? "C'est ton annonce"
+          : `Vendue par <strong>${escapeHtml(item.seller.username)}</strong>${item.isFriend ? ' · <span class="friend-tag">ami</span>' : ""}`}
+          · en vente ${escapeHtml(fmtAgo(item.created_at))}</p>
+        <div class="detail-actions">
+          ${mine
+            ? `<button type="button" class="button secondary" id="detail-reprice">Modifier le prix</button>
+               <button type="button" class="button secondary" id="detail-cancel">Retirer l'annonce</button>`
+            : `<button type="button" class="button primary" id="detail-buy">Acheter pour ${money(item.price)}</button>`}
+        </div>
+      </div>
+    </div>`, { wide: true });
+
+  if (mine) {
+    $("#detail-reprice").addEventListener("click", async () => {
+      if (await repriceListing(item.id)) closeModal();
+    });
+    $("#detail-cancel").addEventListener("click", async (event) => {
+      if (await cancelMyListing(item.id, event.currentTarget)) closeModal();
+    });
+  } else {
+    $("#detail-buy").addEventListener("click", async (event) => {
+      if (await buyListing(item.id, event.currentTarget)) closeModal();
+    });
+  }
+}
+
 /* ----- Branchement ----- */
 
 function setupBazaar() {
@@ -330,13 +383,26 @@ function setupBazaar() {
   });
 
   $("#bazaar-list").addEventListener("click", (event) => {
+    const detail = event.target.closest("[data-detail]");
     const button = event.target.closest("[data-buy]");
-    if (button) buyListing(Number(button.dataset.buy), button);
+
+    if (detail) {
+      const item = bazaarListings.find((listing) => listing.id === Number(detail.dataset.detail));
+      if (item) openListingDetail(item, item.isMine);
+    } else if (button) {
+      buyListing(Number(button.dataset.buy), button);
+    }
   });
 
   $("#bazaar-mine").addEventListener("click", (event) => {
+    const detail = event.target.closest("[data-detail]");
     const reprice = event.target.closest("[data-reprice]");
     const cancel = event.target.closest("[data-cancel]");
+
+    if (detail) {
+      const item = bazaarMine.active.find((listing) => listing.id === Number(detail.dataset.detail));
+      if (item) openListingDetail(item, true);
+    }
 
     if (reprice) repriceListing(Number(reprice.dataset.reprice));
     if (cancel) cancelMyListing(Number(cancel.dataset.cancel), cancel);
