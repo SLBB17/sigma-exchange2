@@ -143,6 +143,29 @@ async function initDb() {
         value TEXT NOT NULL DEFAULT '',
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
+
+      CREATE TABLE IF NOT EXISTS card_listings (
+        id SERIAL PRIMARY KEY,
+        seller_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        card_id INTEGER NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
+        price NUMERIC(15,2) NOT NULL,
+        status VARCHAR(12) NOT NULL DEFAULT 'active',
+        buyer_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        sold_at TIMESTAMPTZ
+      );
+
+      CREATE INDEX IF NOT EXISTS card_listings_active_idx
+        ON card_listings (status, card_id, price);
+
+      CREATE TABLE IF NOT EXISTS friendships (
+        id SERIAL PRIMARY KEY,
+        requester_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        addressee_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        status VARCHAR(10) NOT NULL DEFAULT 'pending',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        responded_at TIMESTAMPTZ
+      );
     `);
 
     // Migration additive : complète les anciennes tables sans
@@ -215,6 +238,22 @@ async function initDb() {
       ["app_settings", "key", "VARCHAR(60)"],
       ["app_settings", "value", "TEXT NOT NULL DEFAULT ''"],
       ["app_settings", "updated_at", "TIMESTAMPTZ NOT NULL DEFAULT NOW()"],
+
+      ["users", "last_seen", "TIMESTAMPTZ"],
+
+      ["card_listings", "seller_id", "INTEGER"],
+      ["card_listings", "card_id", "INTEGER"],
+      ["card_listings", "price", "NUMERIC(15,2) NOT NULL DEFAULT 0"],
+      ["card_listings", "status", "VARCHAR(12) NOT NULL DEFAULT 'active'"],
+      ["card_listings", "buyer_id", "INTEGER"],
+      ["card_listings", "created_at", "TIMESTAMPTZ NOT NULL DEFAULT NOW()"],
+      ["card_listings", "sold_at", "TIMESTAMPTZ"],
+
+      ["friendships", "requester_id", "INTEGER"],
+      ["friendships", "addressee_id", "INTEGER"],
+      ["friendships", "status", "VARCHAR(10) NOT NULL DEFAULT 'pending'"],
+      ["friendships", "created_at", "TIMESTAMPTZ NOT NULL DEFAULT NOW()"],
+      ["friendships", "responded_at", "TIMESTAMPTZ"],
 
       ["users", "email", "VARCHAR(254)"],
       ["users", "banned", "BOOLEAN NOT NULL DEFAULT FALSE"],
@@ -560,7 +599,9 @@ async function initDb() {
       ["Chanceux", "Tu as obtenu une carte légendaire ou mythique."],
       ["Portefeuille diversifié", "Tu détiens au moins 5 entreprises différentes."],
       ["Bavard", "Tu as envoyé ton premier message dans le chat."],
-      ["Millionnaire", "Ton solde dépasse 25 000 crédits."]
+      ["Millionnaire", "Ton solde dépasse 25 000 crédits."],
+      ["Commerçant", "Tu as acheté ou vendu une carte au bazar."],
+      ["Sociable", "Tu t'es fait ton premier ami."]
     ];
 
     for (const [name, description] of titles) {
@@ -618,6 +659,17 @@ async function initDb() {
       "Index d'unicité insensible à la casse non créé " +
       "(doublons existants ?) :", err.message
     );
+  }
+
+  // Une seule relation d'amitié possible entre deux joueurs, quel que soit
+  // le sens de la demande.
+  try {
+    await pool.query(
+      `CREATE UNIQUE INDEX IF NOT EXISTS friendships_pair_idx
+       ON friendships (LEAST(requester_id, addressee_id), GREATEST(requester_id, addressee_id))`
+    );
+  } catch (err) {
+    console.warn("Index d'unicité des amitiés non créé :", err.message);
   }
 
   // Une adresse e-mail ne peut servir qu'à un seul compte.
