@@ -267,7 +267,7 @@ async function requireAuth(req, res, next) {
     }
 
     const result = await pool.query(
-      `SELECT id, username, email, role, banned, muted_until
+      `SELECT id, username, email, role, banned, muted_until, last_seen
        FROM users WHERE id = $1`,
       [req.session.userId]
     );
@@ -286,6 +286,13 @@ async function requireAuth(req, res, next) {
     }
 
     req.user = user;
+
+    // Présence en ligne : mise à jour au plus une fois par minute.
+    if (!user.last_seen || Date.now() - new Date(user.last_seen).getTime() > 60000) {
+      pool.query("UPDATE users SET last_seen = NOW() WHERE id = $1", [user.id])
+        .catch(() => {});
+    }
+
     next();
   } catch (err) {
     next(err);
@@ -1469,6 +1476,679 @@ app.post("/api/chat", requireAuth, requireEmail, asyncRoute(async (req, res) => 
 }));
 
 /* ------------------------------------------------------------------ */
+/* Bazar : vente de cartes entre joueurs                               */
+/* ------------------------------------------------------------------ */
+
+const BAZAAR_FEE_RATE = 0.05;
+const MAX_ACTIVE_LISTINGS = 50;
+const MAX_FRIENDS = 100;
+const ONLINE_WINDOW_MS = 3 * 60 * 1000;
+
+function parsePrice(value) {
+  if (typeof value !== "number" && typeof value !== "string") return null;
+  const price = Number(Number(value).toFixed(2));
+  return Number.isFinite(price) && price >= 1 && price <= 1000000 ? price : null;
+}
+
+// Ajoute des exemplaires d'une carte à un joueur ; renvoie true s'il la possédait déjà.
+async function giveCard(client, userId, cardId, quantity = 1) {
+  const owned = await client.query(
+    "SELECT quantity FROM user_cards WHERE user_id = $1 AND card_id = $2 FOR UPDATE",
+    [userId, cardId]
+  );
+
+  if (owned.rows.length) {
+    await client.query(
+      "UPDATE user_cards SET quantity = quantity + $3 WHERE user_id = $1 AND card_id = $2",
+      [userId, cardId, quantity]
+    );
+    return Number(owned.rows[0].quantity) > 0;
+  }
+
+  await client.query(
+    "INSERT INTO user_cards (user_id, card_id, quantity) VALUES ($1, $2, $3)",
+    [userId, cardId, quantity]
+  );
+  return false;
+}
+
+// Retire des exemplaires ; renvoie false si le joueur n'en possède pas assez.
+async function takeCard(client, userId, cardId, quantity = 1) {
+  const owned = await client.query(
+    "SELECT quantity FROM user_cards WHERE user_id = $1 AND card_id = $2 FOR UPDATE",
+    [userId, cardId]
+  );
+
+  const current = owned.rows.length ? Number(owned.rows[0].quantity) : 0;
+  if (current < quantity) return false;
+
+  if (current === quantity) {
+    await client.query(
+      "DELETE FROM user_cards WHERE user_id = $1 AND card_id = $2",
+      [userId, cardId]
+    );
+  } else {
+    await client.query(
+      "UPDATE user_cards SET quantity = quantity - $3 WHERE user_id = $1 AND card_id = $2",
+      [userId, cardId, quantity]
+    );
+  }
+  return true;
+}
+
+function listingPayload(row, userId) {
+  return {
+    id: row.id,
+    price: row.price,
+    status: row.status,
+    created_at: row.created_at,
+    sold_at: row.sold_at || null,
+    seller: { id: row.seller_id, username: row.seller_name },
+    isMine: row.seller_id === userId,
+    isFriend: Boolean(row.is_friend),
+    card: cardPayload({
+      id: row.card_id,
+      name: row.name,
+      rarity: row.rarity,
+      emoji: row.emoji,
+      series: row.series,
+      description: row.description
+    })
+  };
+}
+
+app.get("/api/bazaar", requireAuth, asyncRoute(async (req, res) => {
+  const q = cleanText(req.query.q, 60);
+  const rarity = RARITIES.includes(req.query.rarity) ? req.query.rarity : "";
+  const seller = ["friends", "mine"].includes(req.query.seller) ? req.query.seller : "all";
+  const sort = ["price-asc", "price-desc", "newest", "rarity-desc"].includes(req.query.sort)
+    ? req.query.sort
+    : "price-asc";
+
+  const result = await pool.query(
+    `SELECT l.id, l.price, l.status, l.created_at, l.sold_at, l.seller_id,
+            u.username AS seller_name,
+            c.id AS card_id, c.name, c.rarity, c.emoji, c.series, c.description,
+            EXISTS (
+              SELECT 1 FROM friendships f
+              WHERE f.status = 'accepted'
+                AND ((f.requester_id = $1 AND f.addressee_id = l.seller_id)
+                  OR (f.addressee_id = $1 AND f.requester_id = l.seller_id))
+            ) AS is_friend
+     FROM card_listings l
+     JOIN users u ON u.id = l.seller_id
+     JOIN cards c ON c.id = l.card_id
+     WHERE l.status = 'active'
+       AND NOT u.banned
+       AND ($2::text IS NULL OR c.name ILIKE $2::text)
+     ORDER BY l.created_at DESC, l.id DESC
+     LIMIT 500`,
+    [req.user.id, q ? `%${escapeLike(q)}%` : null]
+  );
+
+  let listings = result.rows.map((row) => listingPayload(row, req.user.id));
+
+  if (rarity) listings = listings.filter((item) => item.card.rarityKey === rarity);
+  if (seller === "friends") listings = listings.filter((item) => item.isFriend);
+  if (seller === "mine") listings = listings.filter((item) => item.isMine);
+
+  const rank = (item) => RARITIES.indexOf(item.card.rarityKey);
+  const sorters = {
+    "price-asc": (a, b) => Number(a.price) - Number(b.price),
+    "price-desc": (a, b) => Number(b.price) - Number(a.price),
+    newest: () => 0,
+    "rarity-desc": (a, b) => rank(b) - rank(a) || Number(a.price) - Number(b.price)
+  };
+  listings.sort(sorters[sort]);
+
+  res.json({ listings: listings.slice(0, 200), total: listings.length });
+}));
+
+app.get("/api/bazaar/mine", requireAuth, asyncRoute(async (req, res) => {
+  const columns = `l.id, l.price, l.status, l.created_at, l.sold_at, l.seller_id, l.buyer_id,
+            s.username AS seller_name, b.username AS buyer_name,
+            c.id AS card_id, c.name, c.rarity, c.emoji, c.series, c.description,
+            FALSE AS is_friend`;
+  const joins = `FROM card_listings l
+     JOIN users s ON s.id = l.seller_id
+     LEFT JOIN users b ON b.id = l.buyer_id
+     JOIN cards c ON c.id = l.card_id`;
+
+  const [active, history] = await Promise.all([
+    pool.query(
+      `SELECT ${columns} ${joins}
+       WHERE l.seller_id = $1 AND l.status = 'active'
+       ORDER BY l.created_at DESC, l.id DESC`,
+      [req.user.id]
+    ),
+    pool.query(
+      `SELECT ${columns} ${joins}
+       WHERE l.status = 'sold' AND (l.seller_id = $1 OR l.buyer_id = $1)
+       ORDER BY l.sold_at DESC, l.id DESC LIMIT 30`,
+      [req.user.id]
+    )
+  ]);
+
+  res.json({
+    feeRate: BAZAAR_FEE_RATE,
+    active: active.rows.map((row) => listingPayload(row, req.user.id)),
+    history: history.rows.map((row) => ({
+      ...listingPayload(row, req.user.id),
+      role: row.seller_id === req.user.id ? "sold" : "bought",
+      buyer: row.buyer_name || null
+    }))
+  });
+}));
+
+app.get("/api/bazaar/price/:cardId", requireAuth, asyncRoute(async (req, res) => {
+  const cardId = parseId(req.params.cardId);
+  if (!cardId) return fail(res, 400, "Carte invalide.");
+
+  const [floor, last] = await Promise.all([
+    pool.query(
+      `SELECT MIN(price) AS floor, COUNT(*)::int AS count
+       FROM card_listings WHERE card_id = $1 AND status = 'active'`,
+      [cardId]
+    ),
+    pool.query(
+      `SELECT price FROM card_listings
+       WHERE card_id = $1 AND status = 'sold'
+       ORDER BY sold_at DESC, id DESC LIMIT 1`,
+      [cardId]
+    )
+  ]);
+
+  res.json({
+    floor: floor.rows[0].floor,
+    activeCount: floor.rows[0].count,
+    lastSold: last.rows[0]?.price ?? null,
+    feeRate: BAZAAR_FEE_RATE
+  });
+}));
+
+app.post("/api/bazaar/list", requireAuth, requireEmail, asyncRoute(async (req, res) => {
+  const body = getBody(req);
+  const cardId = parseId(body.cardId);
+  const price = parsePrice(body.price);
+  const quantity = clampInt(body.quantity, 1, 10, 1);
+
+  if (!cardId) return fail(res, 400, "Carte invalide.");
+  if (price === null) {
+    return fail(res, 400, "Le prix doit être compris entre 1 et 1 000 000 crédits.");
+  }
+
+  const userId = req.user.id;
+  const client = await pool.connect();
+  const abort = async (status, message) => {
+    await client.query("ROLLBACK");
+    return fail(res, status, message);
+  };
+
+  try {
+    await client.query("BEGIN");
+
+    const card = await client.query("SELECT id FROM cards WHERE id = $1", [cardId]);
+    if (!card.rows.length) return abort(404, "Carte introuvable.");
+
+    const active = await client.query(
+      "SELECT COUNT(*)::int AS n FROM card_listings WHERE seller_id = $1 AND status = 'active'",
+      [userId]
+    );
+    if (active.rows[0].n + quantity > MAX_ACTIVE_LISTINGS) {
+      return abort(400, `Tu ne peux pas avoir plus de ${MAX_ACTIVE_LISTINGS} annonces en même temps.`);
+    }
+
+    // La carte est mise « sous séquestre » : elle quitte la collection du vendeur.
+    if (!(await takeCard(client, userId, cardId, quantity))) {
+      return abort(400, "Tu ne possèdes pas assez d'exemplaires de cette carte.");
+    }
+
+    await client.query(
+      `INSERT INTO card_listings (seller_id, card_id, price)
+       SELECT $1::int, $2::int, $3::numeric FROM generate_series(1, $4::int)`,
+      [userId, cardId, price, quantity]
+    );
+
+    await client.query("COMMIT");
+    res.status(201).json({ ok: true, listed: quantity });
+  } catch (err) {
+    await safeRollback(client);
+    throw err;
+  } finally {
+    client.release();
+  }
+}));
+
+app.post("/api/bazaar/:id/buy", requireAuth, requireEmail, asyncRoute(async (req, res) => {
+  const listingId = parseId(req.params.id);
+  if (!listingId) return fail(res, 400, "Annonce invalide.");
+
+  const userId = req.user.id;
+  const client = await pool.connect();
+  const abort = async (status, message) => {
+    await client.query("ROLLBACK");
+    return fail(res, status, message);
+  };
+
+  try {
+    await client.query("BEGIN");
+
+    const found = await client.query(
+      `SELECT l.id, l.seller_id, l.card_id, l.price, l.status,
+              c.name, c.rarity, c.emoji, c.series, c.description
+       FROM card_listings l
+       JOIN cards c ON c.id = l.card_id
+       WHERE l.id = $1
+       FOR UPDATE OF l`,
+      [listingId]
+    );
+    const listing = found.rows[0];
+
+    if (!listing || listing.status !== "active") {
+      return abort(404, "Cette annonce n'est plus disponible.");
+    }
+    if (listing.seller_id === userId) {
+      return abort(400, "Tu ne peux pas acheter ta propre annonce.");
+    }
+
+    const price = Number(listing.price);
+    const fee = Number((price * BAZAAR_FEE_RATE).toFixed(2));
+    const net = Number((price - fee).toFixed(2));
+
+    // Les deux comptes sont verrouillés dans l'ordre des identifiants (pas de blocage mutuel).
+    const accounts = await client.query(
+      `SELECT id, username, balance FROM users
+       WHERE id = ANY($1::int[]) ORDER BY id FOR UPDATE`,
+      [[userId, listing.seller_id]]
+    );
+    const buyer = accounts.rows.find((row) => row.id === userId);
+    const seller = accounts.rows.find((row) => row.id === listing.seller_id);
+
+    if (!buyer) throw new Error("Utilisateur introuvable.");
+    if (!seller) return abort(404, "Le vendeur n'existe plus.");
+    if (Number(buyer.balance) < price) return abort(400, "Solde insuffisant.");
+
+    await client.query("UPDATE users SET balance = balance - $1 WHERE id = $2", [price, userId]);
+    await client.query("UPDATE users SET balance = balance + $1 WHERE id = $2", [net, seller.id]);
+
+    const hadBefore = await giveCard(client, userId, listing.card_id, 1);
+
+    await client.query(
+      `UPDATE card_listings
+       SET status = 'sold', buyer_id = $2, sold_at = NOW()
+       WHERE id = $1`,
+      [listingId, userId]
+    );
+
+    await recordTransaction(client, userId, "card_buy", {
+      listingId, card: listing.name, price, seller: seller.username
+    });
+    await recordTransaction(client, seller.id, "card_sell", {
+      listingId, card: listing.name, price, fee, net, buyer: buyer.username
+    });
+
+    const newTitles = [];
+    if (await awardTitle(client, userId, "Commerçant", { savepoint: true })) {
+      newTitles.push("Commerçant");
+    }
+    await awardTitle(client, seller.id, "Commerçant", { savepoint: true });
+
+    const updated = await client.query("SELECT balance FROM users WHERE id = $1", [userId]);
+
+    await client.query("COMMIT");
+    res.json({
+      balance: updated.rows[0].balance,
+      price,
+      card: cardPayload(listing, { isNew: !hadBefore }),
+      newTitles
+    });
+  } catch (err) {
+    await safeRollback(client);
+    throw err;
+  } finally {
+    client.release();
+  }
+}));
+
+app.post("/api/bazaar/:id/cancel", requireAuth, asyncRoute(async (req, res) => {
+  const listingId = parseId(req.params.id);
+  if (!listingId) return fail(res, 400, "Annonce invalide.");
+
+  const client = await pool.connect();
+  const abort = async (status, message) => {
+    await client.query("ROLLBACK");
+    return fail(res, status, message);
+  };
+
+  try {
+    await client.query("BEGIN");
+
+    const found = await client.query(
+      "SELECT id, seller_id, card_id, status FROM card_listings WHERE id = $1 FOR UPDATE",
+      [listingId]
+    );
+    const listing = found.rows[0];
+
+    if (!listing || listing.status !== "active") {
+      return abort(404, "Cette annonce n'est plus disponible.");
+    }
+    if (listing.seller_id !== req.user.id) {
+      return abort(403, "Cette annonce ne t'appartient pas.");
+    }
+
+    await client.query("UPDATE card_listings SET status = 'cancelled' WHERE id = $1", [listingId]);
+    await giveCard(client, req.user.id, listing.card_id, 1);
+
+    await client.query("COMMIT");
+    res.json({ ok: true });
+  } catch (err) {
+    await safeRollback(client);
+    throw err;
+  } finally {
+    client.release();
+  }
+}));
+
+app.patch("/api/bazaar/:id", requireAuth, asyncRoute(async (req, res) => {
+  const listingId = parseId(req.params.id);
+  const price = parsePrice(getBody(req).price);
+
+  if (!listingId) return fail(res, 400, "Annonce invalide.");
+  if (price === null) {
+    return fail(res, 400, "Le prix doit être compris entre 1 et 1 000 000 crédits.");
+  }
+
+  const result = await pool.query(
+    `UPDATE card_listings SET price = $1
+     WHERE id = $2 AND seller_id = $3 AND status = 'active'
+     RETURNING id`,
+    [price, listingId, req.user.id]
+  );
+  if (!result.rows.length) return fail(res, 404, "Cette annonce n'est plus disponible.");
+
+  res.json({ ok: true, price });
+}));
+
+/* ------------------------------------------------------------------ */
+/* Amis                                                                */
+/* ------------------------------------------------------------------ */
+
+function isOnline(lastSeen) {
+  return Boolean(lastSeen) && Date.now() - new Date(lastSeen).getTime() < ONLINE_WINDOW_MS;
+}
+
+async function areFriends(db, a, b) {
+  const result = await db.query(
+    `SELECT 1 FROM friendships
+     WHERE status = 'accepted'
+       AND ((requester_id = $1 AND addressee_id = $2)
+         OR (requester_id = $2 AND addressee_id = $1))
+     LIMIT 1`,
+    [a, b]
+  );
+  return result.rows.length > 0;
+}
+
+async function awardSociable(...userIds) {
+  for (const id of userIds) {
+    await awardTitle(pool, id, "Sociable");
+  }
+}
+
+app.get("/api/friends", requireAuth, asyncRoute(async (req, res) => {
+  const result = await pool.query(
+    `SELECT f.id AS request_id, f.requester_id, f.status, f.created_at, f.responded_at,
+            u.id AS other_id, u.username, u.last_seen
+     FROM friendships f
+     JOIN users u ON u.id = CASE WHEN f.requester_id = $1 THEN f.addressee_id ELSE f.requester_id END
+     WHERE (f.requester_id = $1 OR f.addressee_id = $1) AND NOT u.banned
+     ORDER BY LOWER(u.username)`,
+    [req.user.id]
+  );
+
+  const friends = [];
+  const incoming = [];
+  const outgoing = [];
+
+  for (const row of result.rows) {
+    const person = {
+      requestId: row.request_id,
+      id: row.other_id,
+      username: row.username,
+      online: isOnline(row.last_seen),
+      lastSeen: row.last_seen
+    };
+
+    if (row.status === "accepted") {
+      friends.push({ ...person, since: row.responded_at || row.created_at });
+    } else if (row.requester_id === req.user.id) {
+      outgoing.push({ ...person, sentAt: row.created_at });
+    } else {
+      incoming.push({ ...person, sentAt: row.created_at });
+    }
+  }
+
+  res.json({ friends, incoming, outgoing });
+}));
+
+app.get("/api/users/search", requireAuth, asyncRoute(async (req, res) => {
+  const q = cleanText(req.query.q, 30);
+  if (q.length < 2) return res.json({ users: [] });
+
+  const result = await pool.query(
+    `SELECT username FROM users
+     WHERE username ILIKE $1 AND id <> $2 AND NOT banned
+     ORDER BY LOWER(username) LIMIT 8`,
+    [`${escapeLike(q)}%`, req.user.id]
+  );
+  res.json({ users: result.rows.map((row) => row.username) });
+}));
+
+app.post("/api/friends/request", requireAuth, asyncRoute(async (req, res) => {
+  const username = cleanText(getBody(req).username, 30);
+  if (!username) return fail(res, 400, "Saisis le pseudo de ton ami.");
+
+  const target = await pool.query(
+    "SELECT id, username FROM users WHERE LOWER(username) = LOWER($1) AND NOT banned LIMIT 1",
+    [username]
+  );
+  if (!target.rows.length) return fail(res, 404, "Aucun joueur ne porte ce pseudo.");
+
+  const other = target.rows[0];
+  if (other.id === req.user.id) return fail(res, 400, "Tu ne peux pas t'ajouter toi-même.");
+
+  const existing = await pool.query(
+    `SELECT id, requester_id, status FROM friendships
+     WHERE (requester_id = $1 AND addressee_id = $2)
+        OR (requester_id = $2 AND addressee_id = $1)
+     LIMIT 1`,
+    [req.user.id, other.id]
+  );
+
+  if (existing.rows.length) {
+    const relation = existing.rows[0];
+
+    if (relation.status === "accepted") return fail(res, 409, "Vous êtes déjà amis.");
+    if (relation.requester_id === req.user.id) {
+      return fail(res, 409, "Tu as déjà envoyé une demande à ce joueur.");
+    }
+
+    // Ce joueur t'avait déjà invité : la demande est acceptée directement.
+    await pool.query(
+      "UPDATE friendships SET status = 'accepted', responded_at = NOW() WHERE id = $1",
+      [relation.id]
+    );
+    await awardSociable(req.user.id, other.id);
+    return res.json({ status: "accepted", username: other.username });
+  }
+
+  const count = await pool.query(
+    `SELECT COUNT(*)::int AS n FROM friendships
+     WHERE status = 'accepted' AND (requester_id = $1 OR addressee_id = $1)`,
+    [req.user.id]
+  );
+  if (count.rows[0].n >= MAX_FRIENDS) {
+    return fail(res, 400, `Tu ne peux pas avoir plus de ${MAX_FRIENDS} amis.`);
+  }
+
+  try {
+    await pool.query(
+      "INSERT INTO friendships (requester_id, addressee_id) VALUES ($1, $2)",
+      [req.user.id, other.id]
+    );
+  } catch (err) {
+    if (err.code === "23505") {
+      return fail(res, 409, "Une demande existe déjà entre vous.");
+    }
+    throw err;
+  }
+
+  res.status(201).json({ status: "pending", username: other.username });
+}));
+
+app.post("/api/friends/requests/:id/accept", requireAuth, asyncRoute(async (req, res) => {
+  const requestId = parseId(req.params.id);
+  if (!requestId) return fail(res, 400, "Demande invalide.");
+
+  const result = await pool.query(
+    `UPDATE friendships SET status = 'accepted', responded_at = NOW()
+     WHERE id = $1 AND addressee_id = $2 AND status = 'pending'
+     RETURNING requester_id`,
+    [requestId, req.user.id]
+  );
+  if (!result.rows.length) return fail(res, 404, "Cette demande n'existe plus.");
+
+  await awardSociable(req.user.id, result.rows[0].requester_id);
+  res.json({ ok: true });
+}));
+
+// Refuser une demande reçue ou annuler une demande envoyée.
+app.delete("/api/friends/requests/:id", requireAuth, asyncRoute(async (req, res) => {
+  const requestId = parseId(req.params.id);
+  if (!requestId) return fail(res, 400, "Demande invalide.");
+
+  const result = await pool.query(
+    `DELETE FROM friendships
+     WHERE id = $1 AND status = 'pending' AND (requester_id = $2 OR addressee_id = $2)
+     RETURNING id`,
+    [requestId, req.user.id]
+  );
+  if (!result.rows.length) return fail(res, 404, "Cette demande n'existe plus.");
+
+  res.json({ ok: true });
+}));
+
+app.delete("/api/friends/:userId", requireAuth, asyncRoute(async (req, res) => {
+  const otherId = parseId(req.params.userId);
+  if (!otherId) return fail(res, 400, "Joueur invalide.");
+
+  const result = await pool.query(
+    `DELETE FROM friendships
+     WHERE status = 'accepted'
+       AND ((requester_id = $1 AND addressee_id = $2)
+         OR (requester_id = $2 AND addressee_id = $1))
+     RETURNING id`,
+    [req.user.id, otherId]
+  );
+  if (!result.rows.length) return fail(res, 404, "Ce joueur n'est pas dans ta liste d'amis.");
+
+  res.json({ ok: true });
+}));
+
+app.get("/api/friends/:userId/profile", requireAuth, asyncRoute(async (req, res) => {
+  const otherId = parseId(req.params.userId);
+  if (!otherId) return fail(res, 400, "Joueur invalide.");
+
+  if (otherId !== req.user.id && !(await areFriends(pool, req.user.id, otherId))) {
+    return fail(res, 403, "Tu dois être ami avec ce joueur pour voir son profil.");
+  }
+
+  const [user, titles, cards, total] = await Promise.all([
+    pool.query(
+      "SELECT id, username, created_at, last_seen FROM users WHERE id = $1 AND NOT banned",
+      [otherId]
+    ),
+    pool.query(
+      `SELECT t.name, t.description FROM user_titles ut
+       JOIN titles t ON t.id = ut.title_id
+       WHERE ut.user_id = $1 ORDER BY t.id`,
+      [otherId]
+    ),
+    pool.query(
+      `SELECT c.id, c.name, c.rarity, c.emoji, c.series, c.description, uc.quantity
+       FROM user_cards uc JOIN cards c ON c.id = uc.card_id
+       WHERE uc.user_id = $1 AND uc.quantity > 0
+       ORDER BY c.id`,
+      [otherId]
+    ),
+    pool.query("SELECT COUNT(*)::int AS n FROM cards")
+  ]);
+
+  if (!user.rows.length) return fail(res, 404, "Joueur introuvable.");
+
+  res.json({
+    user: {
+      id: user.rows[0].id,
+      username: user.rows[0].username,
+      created_at: user.rows[0].created_at,
+      online: isOnline(user.rows[0].last_seen),
+      lastSeen: user.rows[0].last_seen
+    },
+    titles: titles.rows,
+    cards: cards.rows.map((row) => cardPayload(row, { quantity: Number(row.quantity) })),
+    totalCards: total.rows[0].n
+  });
+}));
+
+app.post("/api/friends/:userId/gift", requireAuth, requireEmail, asyncRoute(async (req, res) => {
+  const friendId = parseId(req.params.userId);
+  const cardId = parseId(getBody(req).cardId);
+  if (!friendId || !cardId) return fail(res, 400, "Requête invalide.");
+
+  if (!(await areFriends(pool, req.user.id, friendId))) {
+    return fail(res, 403, "Tu ne peux offrir une carte qu'à un ami.");
+  }
+
+  const client = await pool.connect();
+  const abort = async (status, message) => {
+    await client.query("ROLLBACK");
+    return fail(res, status, message);
+  };
+
+  try {
+    await client.query("BEGIN");
+
+    const friend = await client.query(
+      "SELECT username FROM users WHERE id = $1 AND NOT banned",
+      [friendId]
+    );
+    const card = await client.query("SELECT id, name FROM cards WHERE id = $1", [cardId]);
+    if (!friend.rows.length) return abort(404, "Joueur introuvable.");
+    if (!card.rows.length) return abort(404, "Carte introuvable.");
+
+    if (!(await takeCard(client, req.user.id, cardId, 1))) {
+      return abort(400, "Tu ne possèdes pas cette carte.");
+    }
+    await giveCard(client, friendId, cardId, 1);
+
+    await recordTransaction(client, req.user.id, "card_gift_sent", {
+      card: card.rows[0].name, to: friend.rows[0].username
+    });
+    await recordTransaction(client, friendId, "card_gift_received", {
+      card: card.rows[0].name, from: req.user.username
+    });
+
+    await client.query("COMMIT");
+    res.json({ ok: true, card: card.rows[0].name, to: friend.rows[0].username });
+  } catch (err) {
+    await safeRollback(client);
+    throw err;
+  } finally {
+    client.release();
+  }
+}));
+
+/* ------------------------------------------------------------------ */
 /* Administration                                                      */
 /* ------------------------------------------------------------------ */
 
@@ -2253,6 +2933,68 @@ app.patch("/api/admin/cards/:id", admin, asyncRoute(async (req, res) => {
 
   await logAdmin(pool, req.user.id, "card.update", { id, ...fields });
   res.json({ ok: true });
+}));
+
+/* ----- Bazar ----- */
+
+app.get("/api/admin/listings", admin, asyncRoute(async (req, res) => {
+  const result = await pool.query(
+    `SELECT l.id, l.price, l.status, l.created_at, l.sold_at, l.seller_id,
+            s.username AS seller_name, b.username AS buyer_name,
+            c.id AS card_id, c.name, c.rarity, c.emoji, c.series, c.description,
+            FALSE AS is_friend
+     FROM card_listings l
+     JOIN users s ON s.id = l.seller_id
+     LEFT JOIN users b ON b.id = l.buyer_id
+     JOIN cards c ON c.id = l.card_id
+     ORDER BY l.id DESC LIMIT 150`
+  );
+
+  res.json({
+    listings: result.rows.map((row) => ({
+      ...listingPayload(row, req.user.id),
+      buyer: row.buyer_name || null
+    }))
+  });
+}));
+
+// Retire une annonce abusive : la carte retourne chez son vendeur.
+app.post("/api/admin/listings/:id/cancel", admin, asyncRoute(async (req, res) => {
+  const listingId = parseId(req.params.id);
+  if (!listingId) return fail(res, 400, "Annonce invalide.");
+
+  const client = await pool.connect();
+  const abort = async (status, message) => {
+    await client.query("ROLLBACK");
+    return fail(res, status, message);
+  };
+
+  try {
+    await client.query("BEGIN");
+
+    const found = await client.query(
+      "SELECT id, seller_id, card_id, status FROM card_listings WHERE id = $1 FOR UPDATE",
+      [listingId]
+    );
+    const listing = found.rows[0];
+    if (!listing || listing.status !== "active") {
+      return abort(404, "Cette annonce n'est plus active.");
+    }
+
+    await client.query("UPDATE card_listings SET status = 'cancelled' WHERE id = $1", [listingId]);
+    await giveCard(client, listing.seller_id, listing.card_id, 1);
+    await logAdmin(client, req.user.id, "listing.cancel", {
+      id: listingId, sellerId: listing.seller_id
+    });
+
+    await client.query("COMMIT");
+    res.json({ ok: true });
+  } catch (err) {
+    await safeRollback(client);
+    throw err;
+  } finally {
+    client.release();
+  }
 }));
 
 /* ----- Titres, annonce, chat, journal ----- */
