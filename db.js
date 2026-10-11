@@ -198,6 +198,24 @@ async function initDb() {
       ["transactions", "details", "JSONB NOT NULL DEFAULT '{}'::jsonb"],
       ["transactions", "created_at", "TIMESTAMPTZ NOT NULL DEFAULT NOW()"],
 
+      ["market_history", "symbol", "VARCHAR(20)"],
+      ["market_history", "price", "NUMERIC(20,8)"],
+      ["market_history", "recorded_at", "TIMESTAMPTZ NOT NULL DEFAULT NOW()"],
+
+      ["chat_messages", "user_id", "INTEGER"],
+      ["chat_messages", "body", "TEXT NOT NULL DEFAULT ''"],
+      ["chat_messages", "deleted", "BOOLEAN NOT NULL DEFAULT FALSE"],
+      ["chat_messages", "created_at", "TIMESTAMPTZ NOT NULL DEFAULT NOW()"],
+
+      ["admin_logs", "admin_id", "INTEGER"],
+      ["admin_logs", "action", "VARCHAR(60)"],
+      ["admin_logs", "details", "JSONB NOT NULL DEFAULT '{}'::jsonb"],
+      ["admin_logs", "created_at", "TIMESTAMPTZ NOT NULL DEFAULT NOW()"],
+
+      ["app_settings", "key", "VARCHAR(60)"],
+      ["app_settings", "value", "TEXT NOT NULL DEFAULT ''"],
+      ["app_settings", "updated_at", "TIMESTAMPTZ NOT NULL DEFAULT NOW()"],
+
       ["users", "email", "VARCHAR(254)"],
       ["users", "banned", "BOOLEAN NOT NULL DEFAULT FALSE"],
       ["users", "muted_until", "TIMESTAMPTZ"],
