@@ -498,12 +498,23 @@ async function awardTitle(db, userId, name, { savepoint = false } = {}) {
   }
 }
 
+// L'historique est secondaire : s'il ne peut pas être écrit (ancienne table
+// incompatible, par exemple), l'achat ou la vente n'est pas annulé pour autant.
 async function recordTransaction(client, userId, type, details) {
-  await client.query(
-    `INSERT INTO transactions (user_id, type, details)
-     VALUES ($1, $2, $3::jsonb)`,
-    [userId, type, JSON.stringify(details)]
-  );
+  try {
+    await client.query("SAVEPOINT record_transaction");
+    await client.query(
+      `INSERT INTO transactions (user_id, type, details)
+       VALUES ($1, $2, $3::jsonb)`,
+      [userId, type, JSON.stringify(details)]
+    );
+    await client.query("RELEASE SAVEPOINT record_transaction");
+  } catch (err) {
+    try {
+      await client.query("ROLLBACK TO SAVEPOINT record_transaction");
+    } catch (_) { /* ignoré */ }
+    console.error("Historique de transaction non écrit :", err.message);
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -644,10 +655,11 @@ async function restockPacks() {
     );
 
     for (const pack of packs.rows) {
-      // Les stocks ne sont pas remis à zéro : ils reçoivent
-      // un nouvel approvisionnement aléatoire toutes les 5 minutes.
+      // Les stocks ne sont pas remis à zéro : ils reçoivent un nouvel
+      // approvisionnement aléatoire toutes les 5 minutes, jusqu'à 25 packs.
+      // Un stock déjà supérieur (réglé par l'administrateur) n'est jamais réduit.
       await pool.query(
-        "UPDATE shop_packs SET stock = stock + $1 WHERE id = $2",
+        "UPDATE shop_packs SET stock = LEAST(stock + $1, GREATEST(stock, 25)) WHERE id = $2",
         [randomInt(1, 8), pack.id]
       );
     }
@@ -1342,7 +1354,7 @@ app.post("/api/shop/buy", requireAuth, requireEmail, asyncRoute(async (req, res)
       );
 
       if (owned.rows.length) {
-        alreadyOwned.add(cardId);
+        if (Number(owned.rows[0].quantity) > 0) alreadyOwned.add(cardId);
         await client.query(
           "UPDATE user_cards SET quantity = quantity + $3 WHERE user_id = $1 AND card_id = $2",
           [userId, cardId, amount]
