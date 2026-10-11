@@ -11,6 +11,8 @@
   <script src="/visuals.js" defer></script>
   <script src="/charts.js" defer></script>
   <script src="/chat.js" defer></script>
+  <script src="/bazaar.js" defer></script>
+  <script src="/friends.js" defer></script>
   <script src="/admin.js" defer></script>
   <script src="/app.js" defer></script>
 </head>
@@ -83,6 +85,8 @@
         <button type="button" class="tab" data-page="shop">Boutique</button>
         <button type="button" class="tab" data-page="collection">Collection</button>
         <button type="button" class="tab" data-page="titles">Titres</button>
+        <button type="button" class="tab" data-page="bazaar">Bazar</button>
+        <button type="button" class="tab" data-page="friends">Amis <span id="friends-badge" class="badge hidden"></span></button>
         <button type="button" class="tab" data-page="chat">Chat</button>
         <button type="button" class="tab hidden" id="admin-tab" data-page="admin">Administration</button>
       </nav>
@@ -146,6 +150,54 @@
       <section class="page-section hidden" id="page-titles">
         <div class="section-heading"><div><div class="eyebrow">PROGRESSION</div><h2>Mes titres</h2></div></div>
         <div id="titles-list" class="title-grid"></div>
+      </section>
+
+      <section class="page-section hidden" id="page-bazaar">
+        <div class="section-heading">
+          <div><div class="eyebrow">ÉCHANGES ENTRE JOUEURS</div><h2>Bazar de cartes</h2></div>
+          <span class="pill" id="bazaar-count"></span>
+        </div>
+        <div id="bazaar-nav" class="admin-nav"></div>
+
+        <div id="bazaar-buy">
+          <div class="toolbar">
+            <input id="bazaar-search" type="search" placeholder="Rechercher une carte" aria-label="Rechercher une carte">
+            <select id="bazaar-rarity" aria-label="Filtrer par rareté">
+              <option value="">Toutes les raretés</option>
+              <option value="common">Commune</option>
+              <option value="rare">Rare</option>
+              <option value="epic">Épique</option>
+              <option value="legendary">Légendaire</option>
+              <option value="mythic">Mythique</option>
+            </select>
+            <select id="bazaar-seller" aria-label="Filtrer par vendeur">
+              <option value="all">Tous les vendeurs</option>
+              <option value="friends">Mes amis</option>
+              <option value="mine">Mes annonces</option>
+            </select>
+            <select id="bazaar-sort" aria-label="Trier">
+              <option value="price-asc">Prix croissant</option>
+              <option value="price-desc">Prix décroissant</option>
+              <option value="newest">Plus récentes</option>
+              <option value="rarity-desc">Raretés les plus hautes</option>
+            </select>
+          </div>
+          <div id="bazaar-list" class="listing-grid"></div>
+        </div>
+        <div id="bazaar-mine" class="hidden"></div>
+        <div id="bazaar-sell" class="hidden"></div>
+
+        <p class="muted">Chaque vendeur fixe son prix. Une commission de 5 % est prélevée sur le prix de vente. Les cartes en vente sont mises de côté et reviennent dans ta collection si tu retires l'annonce.</p>
+      </section>
+
+      <section class="page-section hidden" id="page-friends">
+        <div class="section-heading"><div><div class="eyebrow">COMMUNAUTÉ</div><h2>Mes amis</h2></div></div>
+        <form id="friend-form" class="friend-form">
+          <input id="friend-input" list="friend-suggestions" placeholder="Pseudo du joueur à ajouter" maxlength="30" autocomplete="off" required aria-label="Pseudo du joueur">
+          <datalist id="friend-suggestions"></datalist>
+          <button type="submit" class="button primary">Envoyer une demande</button>
+        </form>
+        <div id="friends-content"></div>
       </section>
 
       <section class="page-section hidden" id="page-chat">
