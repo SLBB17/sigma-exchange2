@@ -1419,7 +1419,7 @@ app.get("/api/chat", requireAuth, asyncRoute(async (req, res) => {
        SELECT m.id, m.body, m.created_at, u.username, u.role
        FROM chat_messages m
        JOIN users u ON u.id = m.user_id
-       WHERE NOT m.deleted
+       WHERE NOT m.deleted AND m.body <> ''
        ORDER BY m.id DESC
        LIMIT 60
      ) t
