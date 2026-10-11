@@ -7,10 +7,17 @@
   <title>Sigma Exchange</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23a78bfa'/%3E%3Ctext x='32' y='47' font-size='42' text-anchor='middle' fill='%23120d25' font-family='sans-serif' font-weight='900'%3E%CE%A3%3C/text%3E%3C/svg%3E">
   <link rel="stylesheet" href="/style.css">
+  <script src="/util.js" defer></script>
+  <script src="/visuals.js" defer></script>
+  <script src="/charts.js" defer></script>
+  <script src="/chat.js" defer></script>
+  <script src="/admin.js" defer></script>
   <script src="/app.js" defer></script>
 </head>
 <body>
   <noscript>Active JavaScript pour utiliser Sigma Exchange.</noscript>
+
+  <div id="announcement" class="announcement hidden" role="status"></div>
 
   <header class="topbar">
     <a class="brand" href="#"><span class="brand-mark">Σ</span> SIGMA <span class="brand-light">EXCHANGE</span></a>
@@ -21,11 +28,11 @@
   </header>
 
   <main class="container">
-    <section class="hero">
+    <section class="hero" id="hero">
       <div>
         <div class="eyebrow"><span class="status-dot"></span> UNIVERS SIMULÉ</div>
         <h1>Joue sur le marché.<br><span>Construis ta collection.</span></h1>
-        <p>Investis avec une monnaie virtuelle, collectionne des cartes et développe ton profil.</p>
+        <p>Investis avec une monnaie virtuelle dans plus de 25 entreprises, collectionne des cartes et discute avec les autres joueurs.</p>
       </div>
       <div class="hero-symbol">Σ</div>
     </section>
@@ -38,10 +45,14 @@
       <form id="auth-form">
         <label for="username">Pseudo</label>
         <input id="username" name="username" minlength="3" maxlength="30" required autocomplete="username">
+        <div id="email-field" class="hidden">
+          <label for="email">Adresse e-mail</label>
+          <input id="email" name="email" type="email" maxlength="254" autocomplete="email" placeholder="prenom.nom@exemple.fr">
+        </div>
         <label for="password">Mot de passe</label>
         <input id="password" name="password" type="password" minlength="8" maxlength="128" required autocomplete="current-password">
         <button type="submit" class="button primary full" id="auth-submit">Se connecter</button>
-        <p id="auth-message" class="message" role="alert"></p>
+        <p id="auth-message" class="message error" role="alert"></p>
       </form>
     </section>
 
@@ -50,7 +61,7 @@
         <div><div class="eyebrow">BIENVENUE</div><h2>Ton univers financier</h2></div>
         <span class="pill">Monnaie virtuelle</span>
       </div>
-      <p>Connecte-toi ou crée un compte pour accéder à ton portefeuille, à la boutique et à ta collection.</p>
+      <p>Connecte-toi ou crée un compte (avec une adresse e-mail valide) pour accéder au marché, à ton portefeuille, à la boutique, à ta collection et au chat.</p>
     </section>
 
     <section id="dashboard" class="hidden">
@@ -61,22 +72,52 @@
 
       <div class="stats-grid">
         <article class="stat-card"><span>Solde virtuel</span><strong id="balance">—</strong><small>Crédits Sigma</small></article>
+        <article class="stat-card"><span>Patrimoine total</span><strong id="net-worth">—</strong><small>Solde + actifs</small></article>
         <article class="stat-card"><span>Actifs en portefeuille</span><strong id="holding-count">0</strong><small>Lignes détenues</small></article>
         <article class="stat-card"><span>Cartes collectionnées</span><strong id="card-count">0</strong><small>Cartes au total</small></article>
       </div>
 
       <nav class="tabs" aria-label="Navigation">
         <button type="button" class="tab active" data-page="market">Marché</button>
+        <button type="button" class="tab" data-page="portfolio">Portefeuille</button>
         <button type="button" class="tab" data-page="shop">Boutique</button>
         <button type="button" class="tab" data-page="collection">Collection</button>
         <button type="button" class="tab" data-page="titles">Titres</button>
+        <button type="button" class="tab" data-page="chat">Chat</button>
         <button type="button" class="tab hidden" id="admin-tab" data-page="admin">Administration</button>
       </nav>
 
       <section class="page-section" id="page-market">
-        <div class="section-heading"><div><div class="eyebrow">MARCHÉ VIRTUEL</div><h2>Actifs disponibles</h2></div></div>
+        <div class="section-heading">
+          <div><div class="eyebrow">MARCHÉ VIRTUEL</div><h2>Entreprises cotées</h2></div>
+          <span class="pill" id="market-count"></span>
+        </div>
+        <div class="toolbar">
+          <input id="market-search" type="search" placeholder="Rechercher une entreprise ou un symbole" aria-label="Rechercher une entreprise">
+          <select id="market-sector" aria-label="Filtrer par secteur"><option value="">Tous les secteurs</option></select>
+          <select id="market-sort" aria-label="Trier">
+            <option value="name">Nom (A → Z)</option>
+            <option value="up">Plus fortes hausses</option>
+            <option value="down">Plus fortes baisses</option>
+            <option value="price-desc">Cours décroissant</option>
+            <option value="price-asc">Cours croissant</option>
+          </select>
+        </div>
         <div id="market-list" class="asset-grid"></div>
-        <p class="muted">Les cours et les opérations sont simulés. Aucun argent réel n'est engagé.</p>
+        <p class="muted">Clique sur une entreprise pour voir son graphique et passer un ordre. Les cours et les opérations sont simulés : aucun argent réel n'est engagé.</p>
+      </section>
+
+      <section class="page-section hidden" id="page-portfolio">
+        <div class="section-heading"><div><div class="eyebrow">MES INVESTISSEMENTS</div><h2>Portefeuille</h2></div></div>
+        <div id="portfolio-summary" class="stats-grid"></div>
+        <div class="two-cols">
+          <section class="panel"><h3>Répartition</h3><div id="portfolio-donut"></div></section>
+          <section class="panel"><h3>Astuce</h3>
+            <p>Diversifie ton portefeuille : détenir au moins 5 entreprises différentes débloque un titre.</p>
+            <p class="muted">Le gain ou la perte latent compare le cours actuel à ton prix d'achat moyen.</p>
+          </section>
+        </div>
+        <div id="portfolio-table"></div>
       </section>
 
       <section class="page-section hidden" id="page-shop">
@@ -86,6 +127,19 @@
 
       <section class="page-section hidden" id="page-collection">
         <div class="section-heading"><div><div class="eyebrow">INVENTAIRE</div><h2>Ma collection</h2></div></div>
+        <div id="collection-progress" class="panel"></div>
+        <div class="toolbar">
+          <input id="collection-search" type="search" placeholder="Rechercher parmi tes cartes" aria-label="Rechercher une carte">
+          <select id="collection-rarity" aria-label="Filtrer par rareté">
+            <option value="">Toutes les raretés</option>
+            <option value="common">Commune</option>
+            <option value="rare">Rare</option>
+            <option value="epic">Épique</option>
+            <option value="legendary">Légendaire</option>
+            <option value="mythic">Mythique</option>
+          </select>
+          <label class="check"><input id="collection-owned" type="checkbox"> Mes cartes uniquement</label>
+        </div>
         <div id="collection-list" class="card-grid"></div>
       </section>
 
@@ -94,18 +148,37 @@
         <div id="titles-list" class="title-grid"></div>
       </section>
 
+      <section class="page-section hidden" id="page-chat">
+        <div class="section-heading"><div><div class="eyebrow">COMMUNAUTÉ</div><h2>Chat</h2></div><span class="pill">Mise à jour automatique</span></div>
+        <div class="chat">
+          <div id="chat-list" class="chat-list" aria-live="polite"></div>
+          <form id="chat-form" class="chat-form">
+            <input id="chat-input" maxlength="300" placeholder="Écris un message…" autocomplete="off" aria-label="Message">
+            <span id="chat-count" class="muted">0 / 300</span>
+            <button type="submit" class="button primary">Envoyer</button>
+          </form>
+        </div>
+        <p class="muted">Reste respectueux : les messages peuvent être supprimés par l'administration.</p>
+      </section>
+
       <section class="page-section hidden" id="page-admin">
         <div class="section-heading"><div><div class="eyebrow">CONTRÔLE</div><h2>Administration</h2></div></div>
-        <button type="button" id="restock" class="button primary">Renouveler le stock</button>
-        <div id="admin-message" class="message" role="status"></div>
-        <h3>Utilisateurs</h3>
-        <div id="admin-users"></div>
+        <div id="admin-nav" class="admin-nav"></div>
+        <div id="admin-content"></div>
       </section>
     </section>
-
-    <p id="page-message" class="message" role="status"></p>
   </main>
 
   <footer><span>Σ SIGMA EXCHANGE</span><span>Économie virtuelle · Apprends en jouant</span></footer>
+
+  <div id="modal" class="modal hidden">
+    <div id="modal-backdrop" class="modal-backdrop"></div>
+    <div id="modal-card" class="modal-card" role="dialog" aria-modal="true">
+      <button type="button" id="modal-close" class="modal-close" aria-label="Fermer">✕</button>
+      <div id="modal-body"></div>
+    </div>
+  </div>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
 </body>
 </html>
