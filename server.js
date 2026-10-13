@@ -521,6 +521,10 @@ async function recordTransaction(client, userId, type, details) {
 /* Simulation du marché                                                */
 /* ------------------------------------------------------------------ */
 
+const RESTOCK_EVERY_MS = 5 * 60 * 1000;
+const MAX_AUTO_STOCK = 25;
+let lastRestockAt = Date.now();
+
 const MEAN_REVERSION = 0.004;
 const HISTORY_STEP_MINUTES = 5;
 const HISTORY_POINTS = 864; // 3 jours
@@ -659,10 +663,11 @@ async function restockPacks() {
       // approvisionnement aléatoire toutes les 5 minutes, jusqu'à 25 packs.
       // Un stock déjà supérieur (réglé par l'administrateur) n'est jamais réduit.
       await pool.query(
-        "UPDATE shop_packs SET stock = LEAST(stock + $1, GREATEST(stock, 25)) WHERE id = $2",
-        [randomInt(1, 8), pack.id]
+        "UPDATE shop_packs SET stock = LEAST(stock + $1, GREATEST(stock, $3::int)) WHERE id = $2",
+        [randomInt(1, 8), pack.id, MAX_AUTO_STOCK]
       );
     }
+    lastRestockAt = Date.now();
   } catch (err) {
     console.error("Réapprovisionnement automatique impossible :", err.message);
   }
@@ -1278,17 +1283,29 @@ app.get("/api/shop", asyncRoute(async (req, res) => {
     `SELECT id, name, description, price, stock, tier, cards_per_pack, emoji
      FROM shop_packs WHERE COALESCE(active, TRUE) ORDER BY price, id`
   );
-  res.json({ packs: result.rows.map(packPayload) });
+  res.json({
+    packs: result.rows.map(packPayload),
+    nextRestockAt: new Date(lastRestockAt + RESTOCK_EVERY_MS).toISOString(),
+    serverTime: new Date().toISOString(),
+    maxAutoStock: MAX_AUTO_STOCK
+  });
 }));
 
 app.post("/api/shop/buy", requireAuth, requireEmail, asyncRoute(async (req, res) => {
   const userId = req.user.id;
-  const packId = Number(getBody(req).packId);
+  const body = getBody(req);
+  const packId = Number(body.packId);
+  const quantity = clampInt(body.quantity, 1, 10, 1);
+
   if (!Number.isInteger(packId) || packId <= 0) {
     return fail(res, 400, "Pack invalide.");
   }
 
   const client = await pool.connect();
+  const abort = async (status, message) => {
+    await client.query("ROLLBACK");
+    return fail(res, status, message);
+  };
 
   try {
     await client.query("BEGIN");
@@ -1297,15 +1314,14 @@ app.post("/api/shop/buy", requireAuth, requireEmail, asyncRoute(async (req, res)
       "SELECT * FROM shop_packs WHERE id = $1 AND COALESCE(active, TRUE) FOR UPDATE",
       [packId]
     );
-    if (!packResult.rows.length) {
-      await client.query("ROLLBACK");
-      return fail(res, 404, "Pack introuvable.");
-    }
+    if (!packResult.rows.length) return abort(404, "Pack introuvable.");
 
     const pack = packResult.rows[0];
-    if (Number(pack.stock) <= 0) {
-      await client.query("ROLLBACK");
-      return fail(res, 400, "Ce pack est en rupture de stock.");
+    const stock = Number(pack.stock) || 0;
+
+    if (stock <= 0) return abort(400, "Ce pack est en rupture de stock.");
+    if (stock < quantity) {
+      return abort(400, `Il ne reste que ${stock} pack${stock > 1 ? "s" : ""} en stock.`);
     }
 
     const userResult = await client.query(
@@ -1315,12 +1331,10 @@ app.post("/api/shop/buy", requireAuth, requireEmail, asyncRoute(async (req, res)
     if (!userResult.rows.length) throw new Error("Utilisateur introuvable.");
 
     const balance = Number(userResult.rows[0].balance);
-    const price = Number(pack.price);
+    const unitPrice = Number(pack.price);
+    const total = Number((unitPrice * quantity).toFixed(2));
 
-    if (balance < price) {
-      await client.query("ROLLBACK");
-      return fail(res, 400, "Solde insuffisant.");
-    }
+    if (balance < total) return abort(400, "Solde insuffisant.");
 
     const cardResult = await client.query(
       "SELECT id, name, rarity, emoji, series, description FROM cards"
@@ -1328,16 +1342,20 @@ app.post("/api/shop/buy", requireAuth, requireEmail, asyncRoute(async (req, res)
     if (!cardResult.rows.length) throw new Error("Aucune carte n'est configurée.");
 
     const key = tierKey(pack);
-    const count = clampInt(pack.cards_per_pack, 1, 10, 1);
-    const drawn = pickCards(cardResult.rows, TIERS[key], count);
+    const perPack = clampInt(pack.cards_per_pack, 1, 10, 1);
+    const openings = [];
+    for (let i = 0; i < quantity; i += 1) {
+      openings.push(pickCards(cardResult.rows, TIERS[key], perPack));
+    }
+    const drawn = openings.flat();
 
     await client.query(
       "UPDATE users SET balance = balance - $1 WHERE id = $2",
-      [price, userId]
+      [total, userId]
     );
     await client.query(
-      "UPDATE shop_packs SET stock = stock - 1 WHERE id = $1",
-      [packId]
+      "UPDATE shop_packs SET stock = stock - $2 WHERE id = $1",
+      [packId, quantity]
     );
 
     // Regroupe les doublons du tirage : une seule mise à jour par carte.
@@ -1370,7 +1388,9 @@ app.post("/api/shop/buy", requireAuth, requireEmail, asyncRoute(async (req, res)
     await recordTransaction(client, userId, "pack_purchase", {
       packId,
       packName: pack.name,
-      price,
+      quantity,
+      price: unitPrice,
+      total,
       cards: drawn.map((card) => card.name),
       rarities: drawn.map((card) => normalizeRarity(card.rarity))
     });
@@ -1396,13 +1416,18 @@ app.post("/api/shop/buy", requireAuth, requireEmail, asyncRoute(async (req, res)
 
     // « isNew » : première fois que le joueur obtient cette carte.
     const seen = new Set();
+    const payloadOpenings = openings.map((cards) => cards.map((card) => {
+      const isNew = !alreadyOwned.has(card.id) && !seen.has(card.id);
+      seen.add(card.id);
+      return cardPayload(card, { isNew });
+    }));
+
     res.json({
       balance: updated.rows[0].balance,
-      cards: drawn.map((card) => {
-        const isNew = !alreadyOwned.has(card.id) && !seen.has(card.id);
-        seen.add(card.id);
-        return cardPayload(card, { isNew });
-      }),
+      quantity,
+      spent: total,
+      openings: payloadOpenings,
+      cards: payloadOpenings.flat(),
       newTitles
     });
   } catch (err) {
@@ -1616,6 +1641,134 @@ app.get("/api/bazaar", requireAuth, asyncRoute(async (req, res) => {
   res.json({ listings: listings.slice(0, 200), total: listings.length });
 }));
 
+// Vue principale du bazar : une ligne par carte, avec le prix le plus bas.
+app.get("/api/bazaar/cards", requireAuth, asyncRoute(async (req, res) => {
+  const q = cleanText(req.query.q, 60);
+  const rarity = RARITIES.includes(req.query.rarity) ? req.query.rarity : "";
+  const seller = ["friends", "mine"].includes(req.query.seller) ? req.query.seller : "all";
+  const sort = ["floor-asc", "floor-desc", "count-desc", "rarity-desc", "newest"].includes(req.query.sort)
+    ? req.query.sort
+    : "floor-asc";
+
+  const result = await pool.query(
+    `SELECT c.id AS card_id, c.name, c.rarity, c.emoji, c.series, c.description,
+            MIN(l.price) AS floor,
+            COUNT(*)::int AS count,
+            MAX(l.created_at) AS latest,
+            COUNT(*) FILTER (WHERE l.seller_id = $1)::int AS mine_count
+     FROM card_listings l
+     JOIN cards c ON c.id = l.card_id
+     JOIN users u ON u.id = l.seller_id
+     WHERE l.status = 'active'
+       AND NOT u.banned
+       AND ($2::text IS NULL OR c.name ILIKE $2::text)
+       AND ($3::text = 'all'
+         OR ($3::text = 'mine' AND l.seller_id = $1)
+         OR ($3::text = 'friends' AND EXISTS (
+              SELECT 1 FROM friendships f
+              WHERE f.status = 'accepted'
+                AND ((f.requester_id = $1 AND f.addressee_id = l.seller_id)
+                  OR (f.addressee_id = $1 AND f.requester_id = l.seller_id)))))
+     GROUP BY c.id, c.name, c.rarity, c.emoji, c.series, c.description`,
+    [req.user.id, q ? `%${escapeLike(q)}%` : null, seller]
+  );
+
+  let entries = result.rows.map((row) => ({
+    card: cardPayload({
+      id: row.card_id, name: row.name, rarity: row.rarity,
+      emoji: row.emoji, series: row.series, description: row.description
+    }),
+    floor: row.floor,
+    count: row.count,
+    mineCount: row.mine_count,
+    latest: row.latest
+  }));
+
+  if (rarity) entries = entries.filter((entry) => entry.card.rarityKey === rarity);
+
+  const rank = (entry) => RARITIES.indexOf(entry.card.rarityKey);
+  const sorters = {
+    "floor-asc": (a, b) => Number(a.floor) - Number(b.floor),
+    "floor-desc": (a, b) => Number(b.floor) - Number(a.floor),
+    "count-desc": (a, b) => b.count - a.count || Number(a.floor) - Number(b.floor),
+    "rarity-desc": (a, b) => rank(b) - rank(a) || Number(a.floor) - Number(b.floor),
+    newest: (a, b) => new Date(b.latest) - new Date(a.latest)
+  };
+  entries.sort(sorters[sort]);
+
+  res.json({
+    cards: entries.slice(0, 200),
+    total: entries.length,
+    totalListings: entries.reduce((sum, entry) => sum + entry.count, 0)
+  });
+}));
+
+// Fiche d'une carte : offres, statistiques de prix et historique des ventes.
+app.get("/api/bazaar/cards/:cardId", requireAuth, asyncRoute(async (req, res) => {
+  const cardId = parseId(req.params.cardId);
+  if (!cardId) return fail(res, 400, "Carte invalide.");
+
+  const [card, offers, sales, owned] = await Promise.all([
+    pool.query(
+      "SELECT id, name, rarity, emoji, series, description FROM cards WHERE id = $1",
+      [cardId]
+    ),
+    pool.query(
+      `SELECT l.id, l.price, l.status, l.created_at, l.sold_at, l.seller_id,
+              u.username AS seller_name,
+              c.id AS card_id, c.name, c.rarity, c.emoji, c.series, c.description,
+              EXISTS (
+                SELECT 1 FROM friendships f
+                WHERE f.status = 'accepted'
+                  AND ((f.requester_id = $2 AND f.addressee_id = l.seller_id)
+                    OR (f.addressee_id = $2 AND f.requester_id = l.seller_id))
+              ) AS is_friend
+       FROM card_listings l
+       JOIN users u ON u.id = l.seller_id
+       JOIN cards c ON c.id = l.card_id
+       WHERE l.card_id = $1 AND l.status = 'active' AND NOT u.banned
+       ORDER BY l.price ASC, l.id ASC
+       LIMIT 100`,
+      [cardId, req.user.id]
+    ),
+    pool.query(
+      `SELECT price, sold_at FROM card_listings
+       WHERE card_id = $1 AND status = 'sold' AND sold_at IS NOT NULL
+       ORDER BY sold_at DESC, id DESC LIMIT 60`,
+      [cardId]
+    ),
+    pool.query(
+      "SELECT quantity FROM user_cards WHERE user_id = $1 AND card_id = $2",
+      [req.user.id, cardId]
+    )
+  ]);
+
+  if (!card.rows.length) return fail(res, 404, "Carte introuvable.");
+
+  const listings = offers.rows.map((row) => listingPayload(row, req.user.id));
+  const recent = sales.rows.slice(0, 10).map((row) => Number(row.price));
+  const average = recent.length
+    ? Number((recent.reduce((sum, price) => sum + price, 0) / recent.length).toFixed(2))
+    : null;
+
+  res.json({
+    card: cardPayload(card.rows[0]),
+    listings,
+    stats: {
+      floor: listings.length ? listings[0].price : null,
+      activeCount: listings.length,
+      lastSold: sales.rows.length ? sales.rows[0].price : null,
+      average,
+      soldCount: sales.rows.length
+    },
+    sales: sales.rows
+      .map((row) => ({ t: new Date(row.sold_at).getTime(), p: Number(row.price) }))
+      .reverse(),
+    owned: owned.rows.length ? Number(owned.rows[0].quantity) : 0,
+    feeRate: BAZAAR_FEE_RATE
+  });
+}));
+
 app.get("/api/bazaar/mine", requireAuth, asyncRoute(async (req, res) => {
   const columns = `l.id, l.price, l.status, l.created_at, l.sold_at, l.seller_id, l.buyer_id,
             s.username AS seller_name, b.username AS buyer_name,
@@ -1656,7 +1809,7 @@ app.get("/api/bazaar/price/:cardId", requireAuth, asyncRoute(async (req, res) =>
   const cardId = parseId(req.params.cardId);
   if (!cardId) return fail(res, 400, "Carte invalide.");
 
-  const [floor, last] = await Promise.all([
+  const [floor, last, average] = await Promise.all([
     pool.query(
       `SELECT MIN(price) AS floor, COUNT(*)::int AS count
        FROM card_listings WHERE card_id = $1 AND status = 'active'`,
@@ -1667,12 +1820,21 @@ app.get("/api/bazaar/price/:cardId", requireAuth, asyncRoute(async (req, res) =>
        WHERE card_id = $1 AND status = 'sold'
        ORDER BY sold_at DESC, id DESC LIMIT 1`,
       [cardId]
+    ),
+    pool.query(
+      `SELECT AVG(price) AS average FROM (
+         SELECT price FROM card_listings
+         WHERE card_id = $1 AND status = 'sold'
+         ORDER BY sold_at DESC, id DESC LIMIT 10
+       ) t`,
+      [cardId]
     )
   ]);
 
   res.json({
     floor: floor.rows[0].floor,
     activeCount: floor.rows[0].count,
+    average: average.rows[0].average === null ? null : Number(Number(average.rows[0].average).toFixed(2)),
     lastSold: last.rows[0]?.price ?? null,
     feeRate: BAZAAR_FEE_RATE
   });
@@ -3009,6 +3171,124 @@ app.post("/api/admin/listings/:id/cancel", admin, asyncRoute(async (req, res) =>
   }
 }));
 
+/* ----- Diagnostic ----- */
+
+// Exécute les requêtes réelles des boutiques, du chat et du marché pour repérer
+// un problème de base de données (ancienne table, colonne manquante...).
+// Les écritures sont testées dans une transaction annulée à la fin.
+async function runDiagnostics() {
+  const checks = [];
+  const record = (name, ok, error) => checks.push({ name, ok, error: ok ? null : error });
+
+  const read = async (name, sql, params = []) => {
+    try {
+      const result = await pool.query(sql, params);
+      record(name, true);
+      return result;
+    } catch (err) {
+      record(name, false, err.message);
+      return null;
+    }
+  };
+
+  await read("Base de données : connexion", "SELECT 1");
+  const users = await read(
+    "Comptes (e-mail, présence, suspension)",
+    "SELECT id, username, email, role, banned, muted_until, last_seen FROM users ORDER BY id LIMIT 1"
+  );
+  await read(
+    "Boutique de packs : liste",
+    `SELECT id, name, description, price, stock, tier, cards_per_pack, emoji
+     FROM shop_packs WHERE COALESCE(active, TRUE) ORDER BY price, id`
+  );
+
+  const cards = await read(
+    "Cartes : catalogue",
+    "SELECT id, name, rarity, emoji, series, description FROM cards ORDER BY id"
+  );
+  if (cards && !cards.rows.length) record("Cartes : au moins une carte", false, "La table cards est vide.");
+
+  await read("Cartes : possessions des joueurs", "SELECT user_id, card_id, quantity FROM user_cards LIMIT 1");
+  await read("Historique des transactions : lecture", "SELECT user_id, type, details FROM transactions LIMIT 1");
+  await read(
+    "Bazar : annonces regroupées",
+    `SELECT c.id, MIN(l.price) AS floor, COUNT(*)::int AS count
+     FROM card_listings l JOIN cards c ON c.id = l.card_id
+     JOIN users u ON u.id = l.seller_id
+     WHERE l.status = 'active' AND NOT u.banned
+     GROUP BY c.id LIMIT 1`
+  );
+  await read("Amis : relations", "SELECT id, requester_id, addressee_id, status FROM friendships LIMIT 1");
+  await read(
+    "Chat : messages",
+    `SELECT m.id, m.body, m.created_at, u.username, u.role
+     FROM chat_messages m JOIN users u ON u.id = m.user_id
+     WHERE NOT m.deleted ORDER BY m.id DESC LIMIT 1`
+  );
+  await read("Marché : entreprises", "SELECT symbol, price, base_price, volatility, active FROM market_assets LIMIT 1");
+  await read("Marché : historique des cours", "SELECT symbol, price, recorded_at FROM market_history LIMIT 1");
+  await read("Titres", "SELECT t.id, t.name, ut.title_id FROM titles t LEFT JOIN user_titles ut ON ut.title_id = t.id LIMIT 1");
+
+  // Écritures : testées puis annulées.
+  const userId = users && users.rows[0] ? users.rows[0].id : null;
+  const cardId = cards && cards.rows[0] ? cards.rows[0].id : null;
+
+  if (userId) {
+    const client = await pool.connect();
+    const tryWrite = async (name, sql, params) => {
+      try {
+        await client.query("SAVEPOINT diag");
+        await client.query(sql, params);
+        await client.query("ROLLBACK TO SAVEPOINT diag");
+        record(name, true);
+      } catch (err) {
+        try { await client.query("ROLLBACK TO SAVEPOINT diag"); } catch (_) { /* ignoré */ }
+        record(name, false, err.message);
+      }
+    };
+
+    try {
+      await client.query("BEGIN");
+      await tryWrite(
+        "Historique des transactions : écriture",
+        "INSERT INTO transactions (user_id, type, details) VALUES ($1, 'diagnostic', '{}'::jsonb)",
+        [userId]
+      );
+      await tryWrite(
+        "Chat : écriture d'un message",
+        "INSERT INTO chat_messages (user_id, body) VALUES ($1, 'diagnostic')",
+        [userId]
+      );
+      if (cardId) {
+        await tryWrite(
+          "Bazar : écriture d'une annonce",
+          "INSERT INTO card_listings (seller_id, card_id, price) VALUES ($1, $2, 10)",
+          [userId, cardId]
+        );
+      }
+      await tryWrite(
+        "Journal d'administration : écriture",
+        "INSERT INTO admin_logs (admin_id, action, details) VALUES ($1, 'diagnostic', '{}'::jsonb)",
+        [userId]
+      );
+    } finally {
+      await safeRollback(client);
+      client.release();
+    }
+  }
+
+  return checks;
+}
+
+app.get("/api/admin/diagnostics", admin, asyncRoute(async (req, res) => {
+  const checks = await runDiagnostics();
+  res.json({
+    ok: checks.every((check) => check.ok),
+    checks,
+    checkedAt: new Date().toISOString()
+  });
+}));
+
 /* ----- Titres, annonce, chat, journal ----- */
 
 app.get("/api/admin/titles", admin, asyncRoute(async (req, res) => {
@@ -3091,7 +3371,9 @@ app.use((err, req, res, next) => {
 
   res.status(500).json({
     error: "Une erreur interne est survenue.",
-    requestId
+    requestId,
+    // Seuls les administrateurs voient la cause exacte.
+    ...(req.user && req.user.role === "admin" ? { detail: err.message } : {})
   });
 });
 
@@ -3149,8 +3431,22 @@ async function start() {
     process.exit(1);
   });
 
+  lastRestockAt = Date.now();
   marketTimer = setInterval(updateMarket, 60 * 1000);
-  restockTimer = setInterval(restockPacks, 5 * 60 * 1000);
+  restockTimer = setInterval(restockPacks, RESTOCK_EVERY_MS);
+
+  // Signale dans les logs tout problème de base de données détecté.
+  runDiagnostics()
+    .then((checks) => {
+      const failed = checks.filter((check) => !check.ok);
+      if (failed.length) {
+        console.warn(`Diagnostic : ${failed.length} vérification(s) en échec :`);
+        failed.forEach((check) => console.warn(` - ${check.name} : ${check.error}`));
+      } else {
+        console.log(`Diagnostic : ${checks.length} vérifications réussies.`);
+      }
+    })
+    .catch((err) => console.error("Diagnostic impossible :", err.message));
 }
 
 start().catch((err) => {
