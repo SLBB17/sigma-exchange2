@@ -4,7 +4,7 @@
 const SUGGESTED_PRICE = { common: 20, rare: 60, epic: 200, legendary: 800, mythic: 3000 };
 const BAZAAR_VIEWS = [["buy", "Acheter"], ["mine", "Mes annonces"], ["sell", "Vendre une carte"]];
 
-let bazaarListings = [];
+let bazaarCards = [];
 let bazaarMine = { active: [], history: [], feeRate: 0.05 };
 
 function showBazaarView() {
@@ -29,18 +29,25 @@ async function loadBazaar() {
   renderSellGrid();
 }
 
-/* ----- Acheter ----- */
+async function refreshCardData() {
+  await Promise.allSettled([loadCollection(), loadTitles()]);
+  updateStats();
+}
 
-function listingTile(item) {
+/* ------------------------------------------------------------------ */
+/* Acheter : une ligne par carte                                       */
+/* ------------------------------------------------------------------ */
+
+function cardMarketTile(entry) {
+  const { card, floor, count, mineCount } = entry;
+
   return `<article class="listing">
-    <button type="button" class="listing-art" data-detail="${Number(item.id)}" aria-label="Voir la carte ${escapeHtml(item.card.name)}">${cardTile(item.card)}</button>
+    <button type="button" class="listing-art" data-market="${Number(card.id)}" aria-label="Voir les offres pour ${escapeHtml(card.name)}">${cardTile(card)}</button>
     <div class="listing-info">
-      <strong class="listing-price">${money(item.price)}</strong>
-      <span class="muted">${item.isMine ? "Ton annonce" : `par ${escapeHtml(item.seller.username)}`}${item.isFriend ? ' · <span class="friend-tag">ami</span>' : ""}</span>
+      <strong class="listing-price">dès ${money(floor)}</strong>
+      <span class="muted">${count} offre${count > 1 ? "s" : ""}${mineCount ? ` · dont ${mineCount} à toi` : ""}</span>
     </div>
-    ${item.isMine
-      ? '<span class="pill">Ton annonce</span>'
-      : `<button type="button" class="button primary small full" data-buy="${Number(item.id)}">Acheter</button>`}
+    <button type="button" class="button primary small full" data-market="${Number(card.id)}">Voir les offres</button>
   </article>`;
 }
 
@@ -53,32 +60,117 @@ async function loadBazaarListings() {
     sort: filter.sort
   });
 
-  const data = await api(`/api/bazaar?${params}`);
-  bazaarListings = Array.isArray(data.listings) ? data.listings : [];
+  const data = await api(`/api/bazaar/cards?${params}`);
+  bazaarCards = Array.isArray(data.cards) ? data.cards : [];
 
-  $("#bazaar-count").textContent = `${data.total} annonce${data.total > 1 ? "s" : ""}`;
-  $("#bazaar-list").innerHTML = bazaarListings.length
-    ? bazaarListings.map(listingTile).join("")
-    : '<p class="muted">Aucune annonce ne correspond. Sois le premier à vendre une carte !</p>';
+  $("#bazaar-count").textContent =
+    `${data.total} carte${data.total > 1 ? "s" : ""} · ${data.totalListings} offre${data.totalListings > 1 ? "s" : ""}`;
+  $("#bazaar-list").innerHTML = bazaarCards.length
+    ? bazaarCards.map(cardMarketTile).join("")
+    : '<p class="muted">Aucune offre ne correspond. Sois le premier à vendre une carte !</p>';
 }
 
-async function refreshCardData() {
-  await Promise.allSettled([loadCollection(), loadTitles()]);
-  updateStats();
+/* ----- Fiche de marché d'une carte ----- */
+
+function offerRow(item, floor) {
+  const price = Number(item.price);
+  const diff = floor > 0 ? ((price - floor) / floor) * 100 : 0;
+
+  return `<tr>
+    <td><strong>${escapeHtml(item.seller.username)}</strong>${item.isFriend ? ' <span class="friend-tag">ami</span>' : ""}</td>
+    <td><strong>${money(price)}</strong></td>
+    <td class="${diff === 0 ? "up" : "muted"}">${diff === 0 ? "Meilleur prix" : `+${diff.toFixed(0)} %`}</td>
+    <td class="muted">${escapeHtml(fmtAgo(item.created_at))}</td>
+    <td class="actions">${item.isMine
+      ? '<span class="pill">Ton annonce</span>'
+      : `<button type="button" class="button primary small" data-offer-buy="${Number(item.id)}">Acheter</button>`}</td>
+  </tr>`;
 }
 
-// Renvoie true si l'achat a réussi.
-async function buyListing(id, button) {
-  const item = bazaarListings.find((listing) => listing.id === id);
-  if (!item) return false;
+function renderCardMarket(data) {
+  const { card, listings, stats, sales, owned } = data;
+  const rarity = RARITY[rarityOf(card)];
+  const floor = stats.floor !== null && stats.floor !== undefined ? Number(stats.floor) : 0;
+  const cheapest = listings.find((item) => !item.isMine);
+  const stat = (label, value) => `<div><span>${label}</span><strong>${value}</strong></div>`;
 
+  openModal(`
+    <div class="market-card">
+      <div class="market-side">
+        ${cardTile(card, { quantity: owned })}
+        <p class="muted">Tu possèdes ${owned} exemplaire${owned > 1 ? "s" : ""}.</p>
+        ${owned > 0 ? '<button type="button" class="button secondary full" id="market-sell">Vendre un exemplaire</button>' : ""}
+      </div>
+
+      <div class="market-main">
+        <h2>${escapeHtml(card.name)}</h2>
+        <p>
+          <span class="pill" style="border-color:${rarity.color};color:${rarity.color}">${rarity.label}</span>
+          ${card.series ? `<span class="pill">${escapeHtml(card.series)}</span>` : ""}
+        </p>
+
+        <div class="range-stats">
+          ${stat("Prix le plus bas", floor ? money(floor) : "—")}
+          ${stat("Dernière vente", stats.lastSold !== null && stats.lastSold !== undefined ? money(stats.lastSold) : "—")}
+          ${stat("Prix moyen", stats.average !== null && stats.average !== undefined ? money(stats.average) : "—")}
+          ${stat("Offres", stats.activeCount)}
+        </div>
+
+        ${cheapest
+          ? `<button type="button" class="button primary" id="market-cheapest" data-offer-buy="${Number(cheapest.id)}">Acheter le moins cher · ${money(cheapest.price)}</button>`
+          : ""}
+
+        <h3>Historique des ventes</h3>
+        <div id="market-chart" class="chart-wrap"></div>
+
+        <h3>Offres (${listings.length})</h3>
+        ${listings.length
+          ? `<div class="table-wrap"><table class="data-table">
+              <thead><tr><th>Vendeur</th><th>Prix</th><th>Écart</th><th>Depuis</th><th></th></tr></thead>
+              <tbody>${listings.map((item) => offerRow(item, floor)).join("")}</tbody>
+            </table></div>`
+          : '<p class="muted">Aucune offre pour cette carte en ce moment.</p>'}
+      </div>
+    </div>`, {
+    wide: true,
+    onClose: () => { $("#modal-body").onclick = null; }
+  });
+
+  const chart = $("#market-chart");
+  if (sales.length >= 2) {
+    renderLineChart(chart, sales, { range: "3d" });
+  } else {
+    chart.innerHTML = '<p class="muted chart-empty">Pas encore assez de ventes pour tracer un graphique.</p>';
+  }
+
+  $("#modal-body").onclick = async (event) => {
+    const buy = event.target.closest("[data-offer-buy]");
+    if (buy) {
+      const item = listings.find((offer) => offer.id === Number(buy.dataset.offerBuy));
+      if (item) await buyFromMarket(item, card.id, buy);
+      return;
+    }
+
+    if (event.target.closest("#market-sell")) {
+      closeModal();
+      if (!state.cards.length) await loadCollection();
+      openSellModal(card.id);
+    }
+  };
+}
+
+async function openCardMarket(cardId) {
+  renderCardMarket(await api(`/api/bazaar/cards/${cardId}`));
+}
+
+async function buyFromMarket(item, cardId, button) {
   const message = `Acheter « ${item.card.name} » à ${item.seller.username} pour ${money(item.price)} ?`;
-  if (!confirm(message)) return false;
+  if (!confirm(message)) return;
 
   setBusy(button, true);
 
   try {
-    const result = await api(`/api/bazaar/${id}/buy`, { method: "POST" });
+    const result = await api(`/api/bazaar/${item.id}/buy`, { method: "POST" });
 
     state.user.balance = result.balance;
     updateStats();
@@ -87,18 +179,26 @@ async function buyListing(id, button) {
       "success"
     );
     toastTitles(result.newTitles);
-
-    await Promise.allSettled([loadBazaarListings(), refreshCardData()]);
-    return true;
   } catch (error) {
     toastError(error);
-    setBusy(button, false);
-    loadBazaarListings().catch(() => {});
-    return false;
+  }
+
+  // Que l'achat ait réussi ou non, on remet la fiche et la liste à jour.
+  loadBazaarListings().catch(() => {});
+  refreshCardData();
+
+  try {
+    const data = await api(`/api/bazaar/cards/${cardId}`);
+    if (data.listings.length || data.owned > 0) renderCardMarket(data);
+    else closeModal();
+  } catch (error) {
+    closeModal();
   }
 }
 
-/* ----- Mes annonces ----- */
+/* ------------------------------------------------------------------ */
+/* Mes annonces                                                        */
+/* ------------------------------------------------------------------ */
 
 function myListingTile(item) {
   return `<article class="listing">
@@ -197,7 +297,39 @@ async function cancelMyListing(id, button) {
   }
 }
 
-/* ----- Vendre ----- */
+function openMyListingDetail(item) {
+  const rarity = RARITY[rarityOf(item.card)];
+
+  openModal(`
+    <div class="card-detail listing-detail">
+      <div class="card-detail-art">${cardTile(item.card)}</div>
+      <div class="card-detail-info">
+        <h2>${escapeHtml(item.card.name)}</h2>
+        <p>
+          <span class="pill" style="border-color:${rarity.color};color:${rarity.color}">${rarity.label}</span>
+          ${item.card.series ? `<span class="pill">${escapeHtml(item.card.series)}</span>` : ""}
+        </p>
+        <p>${escapeHtml(item.card.description)}</p>
+        <p class="detail-price">${money(item.price)}</p>
+        <p class="muted">C'est ton annonce · en vente ${escapeHtml(fmtAgo(item.created_at))}</p>
+        <div class="detail-actions">
+          <button type="button" class="button secondary" id="detail-reprice">Modifier le prix</button>
+          <button type="button" class="button secondary" id="detail-cancel">Retirer l'annonce</button>
+        </div>
+      </div>
+    </div>`, { wide: true });
+
+  $("#detail-reprice").addEventListener("click", async () => {
+    if (await repriceListing(item.id)) closeModal();
+  });
+  $("#detail-cancel").addEventListener("click", async (event) => {
+    if (await cancelMyListing(item.id, event.currentTarget)) closeModal();
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/* Vendre                                                              */
+/* ------------------------------------------------------------------ */
 
 function renderSellGrid() {
   const owned = state.cards.filter((card) => Number(card.quantity) > 0);
@@ -229,6 +361,7 @@ async function openSellModal(cardId) {
 
         <label for="sell-price">Prix par carte (crédits)</label>
         <input id="sell-price" type="number" min="1" max="1000000" step="0.01" value="${SUGGESTED_PRICE[key]}" required>
+        <div id="sell-chips" class="quick"></div>
 
         <label for="sell-qty">Quantité (tu en possèdes ${owned})</label>
         <input id="sell-qty" type="number" min="1" max="${Math.min(owned, 10)}" step="1" value="1" required>
@@ -258,23 +391,43 @@ async function openSellModal(cardId) {
     if (!$("#sell-hint")) return;
 
     feeRate = Number(info.feeRate) || feeRate;
+    const hasFloor = info.floor !== null && info.floor !== undefined;
+    const hasLast = info.lastSold !== null && info.lastSold !== undefined;
+    const hasAverage = info.average !== null && info.average !== undefined;
+
     const parts = [];
-    if (info.floor !== null && info.floor !== undefined) {
-      parts.push(`Prix le plus bas en ce moment : ${money(info.floor)} (${info.activeCount} annonce${info.activeCount > 1 ? "s" : ""})`);
-      $("#sell-price").value = String(Number(info.floor));
-    } else if (info.lastSold !== null && info.lastSold !== undefined) {
-      $("#sell-price").value = String(Number(info.lastSold));
-    }
-    if (info.lastSold !== null && info.lastSold !== undefined) {
-      parts.push(`Dernière vente : ${money(info.lastSold)}`);
-    }
+    if (hasFloor) parts.push(`Prix le plus bas : ${money(info.floor)} (${info.activeCount} offre${info.activeCount > 1 ? "s" : ""})`);
+    if (hasLast) parts.push(`Dernière vente : ${money(info.lastSold)}`);
 
     $("#sell-hint").textContent = parts.length
       ? parts.join(" · ")
       : "Personne ne vend cette carte pour l'instant : à toi de fixer le prix.";
+
+    // Boutons de prix rapides.
+    const chips = [];
+    if (hasFloor) {
+      chips.push(["Un peu moins cher", Math.max(1, Number((Number(info.floor) - 1).toFixed(2)))]);
+      chips.push(["Prix le plus bas", Number(info.floor)]);
+    }
+    if (hasLast) chips.push(["Dernière vente", Number(info.lastSold)]);
+    if (hasAverage) chips.push(["Prix moyen", Number(info.average)]);
+
+    $("#sell-chips").innerHTML = chips.map(([label, value]) =>
+      `<button type="button" class="chip" data-price="${value}">${label} · ${fmtPrice(value)}</button>`
+    ).join("");
+
+    const start = hasFloor ? Number(info.floor) : hasLast ? Number(info.lastSold) : null;
+    if (start !== null) $("#sell-price").value = String(start);
     updateNet();
   }).catch(() => {
     if ($("#sell-hint")) $("#sell-hint").textContent = "Fixe le prix que tu veux.";
+  });
+
+  $("#sell-chips").addEventListener("click", (event) => {
+    const chip = event.target.closest("[data-price]");
+    if (!chip) return;
+    $("#sell-price").value = chip.dataset.price;
+    updateNet();
   });
 
   $("#sell-form").addEventListener("submit", async (event) => {
@@ -304,51 +457,9 @@ async function openSellModal(cardId) {
   });
 }
 
-/* ----- Fiche détaillée d'une annonce ----- */
-
-function openListingDetail(item, mine) {
-  const key = rarityOf(item.card);
-  const rarity = RARITY[key];
-
-  openModal(`
-    <div class="card-detail listing-detail">
-      <div class="card-detail-art">${cardTile(item.card)}</div>
-      <div class="card-detail-info">
-        <h2>${escapeHtml(item.card.name)}</h2>
-        <p>
-          <span class="pill" style="border-color:${rarity.color};color:${rarity.color}">${rarity.label}</span>
-          ${item.card.series ? `<span class="pill">${escapeHtml(item.card.series)}</span>` : ""}
-        </p>
-        <p>${escapeHtml(item.card.description)}</p>
-        <p class="detail-price">${money(item.price)}</p>
-        <p class="muted">${mine
-          ? "C'est ton annonce"
-          : `Vendue par <strong>${escapeHtml(item.seller.username)}</strong>${item.isFriend ? ' · <span class="friend-tag">ami</span>' : ""}`}
-          · en vente ${escapeHtml(fmtAgo(item.created_at))}</p>
-        <div class="detail-actions">
-          ${mine
-            ? `<button type="button" class="button secondary" id="detail-reprice">Modifier le prix</button>
-               <button type="button" class="button secondary" id="detail-cancel">Retirer l'annonce</button>`
-            : `<button type="button" class="button primary" id="detail-buy">Acheter pour ${money(item.price)}</button>`}
-        </div>
-      </div>
-    </div>`, { wide: true });
-
-  if (mine) {
-    $("#detail-reprice").addEventListener("click", async () => {
-      if (await repriceListing(item.id)) closeModal();
-    });
-    $("#detail-cancel").addEventListener("click", async (event) => {
-      if (await cancelMyListing(item.id, event.currentTarget)) closeModal();
-    });
-  } else {
-    $("#detail-buy").addEventListener("click", async (event) => {
-      if (await buyListing(item.id, event.currentTarget)) closeModal();
-    });
-  }
-}
-
-/* ----- Branchement ----- */
+/* ------------------------------------------------------------------ */
+/* Branchement                                                         */
+/* ------------------------------------------------------------------ */
 
 function setupBazaar() {
   $("#bazaar-nav").innerHTML = BAZAAR_VIEWS.map(([key, label]) =>
@@ -383,15 +494,8 @@ function setupBazaar() {
   });
 
   $("#bazaar-list").addEventListener("click", (event) => {
-    const detail = event.target.closest("[data-detail]");
-    const button = event.target.closest("[data-buy]");
-
-    if (detail) {
-      const item = bazaarListings.find((listing) => listing.id === Number(detail.dataset.detail));
-      if (item) openListingDetail(item, item.isMine);
-    } else if (button) {
-      buyListing(Number(button.dataset.buy), button);
-    }
+    const market = event.target.closest("[data-market]");
+    if (market) openCardMarket(Number(market.dataset.market)).catch(toastError);
   });
 
   $("#bazaar-mine").addEventListener("click", (event) => {
@@ -401,9 +505,8 @@ function setupBazaar() {
 
     if (detail) {
       const item = bazaarMine.active.find((listing) => listing.id === Number(detail.dataset.detail));
-      if (item) openListingDetail(item, true);
+      if (item) openMyListingDetail(item);
     }
-
     if (reprice) repriceListing(Number(reprice.dataset.reprice));
     if (cancel) cancelMyListing(Number(cancel.dataset.cancel), cancel);
   });
