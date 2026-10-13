@@ -8,7 +8,8 @@ const ADMIN_SECTIONS = [
   ["cards", "Cartes"],
   ["bazaar", "Bazar"],
   ["comms", "Communication"],
-  ["logs", "Journal"]
+  ["logs", "Journal"],
+  ["diagnostic", "Diagnostic"]
 ];
 
 const ADMIN_ACTIONS = {
@@ -135,7 +136,8 @@ async function loadAdminSection() {
     cards: adminCards,
     bazaar: adminBazaar,
     comms: adminComms,
-    logs: adminLogs
+    logs: adminLogs,
+    diagnostic: adminDiagnostic
   };
 
   try {
@@ -539,6 +541,47 @@ async function adminLogs(box) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Diagnostic de la base de données                                    */
+/* ------------------------------------------------------------------ */
+
+let lastDiagnostic = null;
+
+function diagnosticReport(data) {
+  const lines = [`Diagnostic Sigma Exchange — ${new Date(data.checkedAt).toLocaleString("fr-FR")}`];
+  data.checks.forEach((check) => {
+    lines.push(`${check.ok ? "OK    " : "ÉCHEC "} ${check.name}${check.ok ? "" : ` : ${check.error}`}`);
+  });
+  return lines.join("\n");
+}
+
+async function adminDiagnostic(box) {
+  const data = await api("/api/admin/diagnostics");
+  lastDiagnostic = data;
+  const failed = data.checks.filter((check) => !check.ok);
+
+  box.innerHTML = `
+    <div class="panel diagnostic-banner ${failed.length ? "bad" : "good"}">
+      <strong>${failed.length
+        ? `${failed.length} problème${failed.length > 1 ? "s" : ""} détecté${failed.length > 1 ? "s" : ""}`
+        : "Tout fonctionne : toutes les vérifications ont réussi"}</strong>
+      <span class="muted">${data.checks.length} vérifications · ${escapeHtml(fmtDateTime(data.checkedAt))}</span>
+      <div class="detail-actions">
+        <button type="button" class="button secondary small" data-admin="diagnostic-run">Relancer</button>
+        <button type="button" class="button secondary small" data-admin="diagnostic-copy">Copier le rapport</button>
+      </div>
+    </div>
+    <div class="table-wrap"><table class="data-table">
+      <thead><tr><th></th><th>Vérification</th><th>Détail</th></tr></thead>
+      <tbody>${data.checks.map((check) => `<tr>
+        <td class="${check.ok ? "up" : "down"}">${check.ok ? "✓" : "✗"}</td>
+        <td>${escapeHtml(check.name)}</td>
+        <td class="${check.ok ? "muted" : "down"}">${check.ok ? "OK" : escapeHtml(check.error)}</td>
+      </tr>`).join("")}</tbody>
+    </table></div>
+    <p class="muted">Ces vérifications exécutent les vraies requêtes de la boutique, du bazar, du chat et du marché. Les écritures sont testées puis annulées : aucune donnée n'est modifiée.</p>`;
+}
+
+/* ------------------------------------------------------------------ */
 /* Actions (clics et formulaires)                                      */
 /* ------------------------------------------------------------------ */
 
@@ -723,6 +766,16 @@ async function onAdminClick(event) {
       await api(`/api/admin/listings/${id}/cancel`, { method: "POST" });
       toast("Annonce retirée.", "success");
       await loadAdminSection();
+    } else if (action === "diagnostic-run") {
+      await loadAdminSection();
+    } else if (action === "diagnostic-copy") {
+      const text = diagnosticReport(lastDiagnostic);
+      try {
+        await navigator.clipboard.writeText(text);
+        toast("Rapport copié dans le presse-papiers.", "success");
+      } catch (error) {
+        toast("Copie impossible : sélectionne le tableau et copie-le à la main.", "error");
+      }
     } else if (action === "chat-clear") {
       if (!confirm("Supprimer tous les messages du chat ?")) return;
       const result = await api("/api/admin/chat/clear", { method: "POST" });
