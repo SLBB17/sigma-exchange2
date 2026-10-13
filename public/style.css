@@ -479,3 +479,43 @@ button.collect-card:hover { transform: translateY(-3px); border-color: var(--acc
 .listing-art:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .detail-price { margin: 14px 0 4px; font-size: 28px; font-weight: 800; color: var(--text); }
 .detail-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
+
+/* ===== Boutique de packs (refonte) ===== */
+.shop-bar {
+  display: flex; flex-wrap: wrap; gap: 6px 18px; align-items: center; justify-content: space-between;
+  padding: 12px 18px; margin-bottom: 18px;
+  background: linear-gradient(90deg, #1b1740, #121827); border: 1px solid #3b2f7a; border-radius: 14px;
+}
+.shop-bar strong { font-variant-numeric: tabular-nums; color: #ddd6fe; font-size: 18px; }
+.odds-bar { display: flex; height: 8px; margin: 8px 0 4px; border-radius: 8px; overflow: hidden; background: var(--bg); }
+.odds-bar span { display: block; height: 100%; min-width: 2px; }
+.stock-line { margin-top: 6px; }
+.stock-line .progress { height: 6px; margin: 6px 0 4px; }
+.buy-row { display: flex; gap: 10px; align-items: center; justify-content: space-between; margin: 10px 0 8px; }
+.buy-total { font-size: 17px; text-align: right; }
+.shop-card .price { margin-top: auto; }
+.stepper { display: flex; align-items: center; border: 1px solid var(--border); border-radius: 12px; background: var(--bg); overflow: hidden; }
+.stepper button { width: 34px; align-self: stretch; border: 0; background: transparent; color: var(--text); font-size: 18px; font-weight: 800; }
+.stepper button:hover:not(:disabled) { background: var(--panel-light); }
+.stepper button:disabled { opacity: .3; cursor: not-allowed; }
+.stepper output { min-width: 26px; text-align: center; font-weight: 800; }
+.buy-hint { display: block; min-height: 16px; margin-top: 6px; text-align: center; }
+.opening-title { margin: 18px 0 0; text-align: left; }
+.reveal-summary { max-width: 560px; margin: 8px auto 18px; padding: 14px 18px; background: var(--bg); border: 1px solid var(--border); border-radius: 14px; }
+.reveal-summary .rarity-pills { justify-content: center; margin-top: 10px; }
+
+/* ===== Fiche de marché d'une carte ===== */
+.market-card { display: flex; gap: 28px; flex-wrap: wrap; }
+.market-side { flex: 0 0 200px; max-width: 100%; margin: 0 auto; text-align: center; }
+.market-side .button { margin-top: 6px; }
+.market-main { flex: 1 1 380px; min-width: 0; }
+.market-main h2 { margin-top: 0; }
+.market-main h3 { margin: 20px 0 8px; }
+.market-main .range-stats { margin: 14px 0; }
+#market-cheapest { margin-bottom: 4px; }
+
+/* ===== Diagnostic ===== */
+.diagnostic-banner { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 18px; }
+.diagnostic-banner.good { border-color: #166534; background: #0b2a1a; }
+.diagnostic-banner.bad { border-color: #9f1239; background: #2c0b16; }
+.diagnostic-banner .detail-actions { margin: 0 0 0 auto; }
