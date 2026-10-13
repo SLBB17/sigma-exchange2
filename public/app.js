@@ -32,6 +32,7 @@ function updateStats() {
   $("#card-count").textContent = state.cards.reduce(
     (sum, card) => sum + Number(card.quantity || 0), 0
   );
+  updateShopRows();
 }
 
 function renderAccount() {
@@ -604,7 +605,48 @@ function renderPortfolio() {
 /* Boutique                                                            */
 /* ------------------------------------------------------------------ */
 
+let shopInfo = { nextRestockAt: null, offset: 0, maxAutoStock: 25, lastReload: 0 };
+const shopQty = {};
+
+function formatCountdown(ms) {
+  const total = Math.max(0, Math.ceil(ms / 1000));
+  const minutes = String(Math.floor(total / 60)).padStart(2, "0");
+  const seconds = String(total % 60).padStart(2, "0");
+  return `${minutes}:${seconds}`;
+}
+
+function updateShopCountdown() {
+  const element = $("#shop-countdown");
+  if (!element || !shopInfo.nextRestockAt) return;
+
+  const remaining = new Date(shopInfo.nextRestockAt).getTime() - (Date.now() + shopInfo.offset);
+
+  if (remaining > 0) {
+    element.textContent = formatCountdown(remaining);
+    return;
+  }
+
+  element.textContent = "00:00";
+
+  // Le stock vient d'être renouvelé : on recharge (au plus toutes les 5 secondes).
+  if (state.user && Date.now() - shopInfo.lastReload > 5000) {
+    shopInfo.lastReload = Date.now();
+    loadShop().catch(() => {});
+  }
+}
+
+function oddsBar(pack) {
+  return RARITY_ORDER
+    .filter((key) => Number(pack.odds[key]) > 0)
+    .map((key) =>
+      `<span style="width:${Number(pack.odds[key])}%;background:${RARITY[key].color}" title="${RARITY[key].label} : ${String(pack.odds[key]).replace(".", ",")} %"></span>`
+    ).join("");
+}
+
 function packCard(pack) {
+  const stock = Number(pack.stock) || 0;
+  const percent = Math.min(100, Math.round((stock / shopInfo.maxAutoStock) * 100));
+
   const odds = RARITY_ORDER
     .filter((key) => Number(pack.odds[key]) > 0)
     .map((key) =>
@@ -615,41 +657,110 @@ function packCard(pack) {
     ? `<p class="guarantee">★ 1 carte ${RARITY[pack.guarantee].label.toLowerCase()} minimum garantie</p>`
     : "";
 
-  return `<article class="shop-card tier-${escapeHtml(pack.tier)}">
+  return `<article class="shop-card tier-${escapeHtml(pack.tier)}" data-pack-id="${Number(pack.id)}">
     <div class="pack-visual">${packArt(pack)}</div>
     <h3>${escapeHtml(pack.name)}</h3>
     <p>${escapeHtml(pack.description)}</p>
     ${guarantee}
+    <div class="odds-bar" aria-hidden="true">${oddsBar(pack)}</div>
     <ul class="odds">${odds}</ul>
+    <div class="stock-line">
+      <div class="progress"><span style="width:${percent}%"></span></div>
+      <small class="muted">Stock : ${stock}</small>
+    </div>
     <div class="price">${money(pack.price)}</div>
-    <p class="muted">Stock : ${Number(pack.stock) || 0}</p>
-    <button type="button" class="button primary full" data-pack="${Number(pack.id)}"
-      ${Number(pack.stock) <= 0 ? "disabled" : ""}>${Number(pack.stock) <= 0 ? "Rupture de stock" : "Acheter le pack"}</button>
+    <div class="buy-row">
+      <div class="stepper" role="group" aria-label="Nombre de packs">
+        <button type="button" data-step="-1" aria-label="Un pack de moins">−</button>
+        <output class="qty-value">1</output>
+        <button type="button" data-step="1" aria-label="Un pack de plus">+</button>
+      </div>
+      <strong class="buy-total"></strong>
+    </div>
+    <button type="button" class="button primary full buy-button" data-buy-pack="${Number(pack.id)}">Acheter</button>
+    <small class="buy-hint muted"></small>
   </article>`;
+}
+
+// Recalcule quantité, prix total et messages selon le solde et le stock.
+function updateShopRows() {
+  if (!state.user) return;
+  const balance = Number(state.user.balance);
+
+  $$("#shop-list .shop-card").forEach((card) => {
+    const pack = state.packs.find((item) => item.id === Number(card.dataset.packId));
+    const button = $(".buy-button", card);
+    if (!pack || button.dataset.busy) return;
+
+    const stock = Number(pack.stock) || 0;
+    const price = Number(pack.price);
+    const affordable = price > 0 ? Math.floor(balance / price) : 10;
+    const maxQty = Math.max(0, Math.min(10, stock, affordable));
+    const qty = Math.min(Math.max(shopQty[pack.id] || 1, 1), Math.max(maxQty, 1));
+    shopQty[pack.id] = qty;
+
+    $(".qty-value", card).textContent = qty;
+    const [minus, plus] = $$(".stepper button", card);
+    minus.disabled = qty <= 1;
+    plus.disabled = qty >= maxQty;
+
+    const hint = $(".buy-hint", card);
+    $(".buy-total", card).textContent = money(price * qty);
+
+    if (stock <= 0) {
+      button.disabled = true;
+      button.textContent = "Rupture de stock";
+      hint.textContent = "Reviens après le prochain réapprovisionnement.";
+    } else if (maxQty < 1) {
+      button.disabled = true;
+      button.textContent = "Solde insuffisant";
+      hint.textContent = `Il te manque ${money(price - balance)}.`;
+    } else {
+      button.disabled = false;
+      button.textContent = qty > 1 ? `Acheter ×${qty}` : "Acheter";
+      hint.textContent = stock <= 3 ? `Plus que ${stock} en stock !` : "";
+    }
+  });
 }
 
 async function loadShop() {
   const data = await api("/api/shop");
   state.packs = Array.isArray(data.packs) ? data.packs : [];
 
+  shopInfo = {
+    nextRestockAt: data.nextRestockAt || null,
+    offset: data.serverTime ? new Date(data.serverTime).getTime() - Date.now() : 0,
+    maxAutoStock: Number(data.maxAutoStock) || 25,
+    lastReload: Date.now()
+  };
+
+  $("#shop-bar").innerHTML = `
+    <span>Prochain réapprovisionnement dans <strong id="shop-countdown">--:--</strong></span>
+    <span class="muted">Chaque réapprovisionnement ajoute de 1 à 8 packs, jusqu'à ${shopInfo.maxAutoStock} par pack.</span>`;
+
   $("#shop-list").innerHTML = state.packs.length
     ? state.packs.map(packCard).join("")
     : "<p>La boutique est vide pour le moment.</p>";
+
+  updateShopRows();
+  updateShopCountdown();
 }
 
-async function buyPack(packId, button) {
+async function buyPack(packId, quantity, button) {
   const pack = state.packs.find((item) => item.id === packId);
   if (!pack) return;
 
+  button.dataset.busy = "1";
   setBusy(button, true);
 
   try {
     const result = await api("/api/shop/buy", {
       method: "POST",
-      body: jsonBody({ packId })
+      body: jsonBody({ packId, quantity })
     });
 
     state.user.balance = result.balance;
+    delete button.dataset.busy;
     updateStats();
     toastTitles(result.newTitles);
     openPackReveal(pack, result);
@@ -658,6 +769,7 @@ async function buyPack(packId, button) {
     loadShop().catch(() => {});
   } catch (error) {
     toastError(error);
+    delete button.dataset.busy;
     setBusy(button, false);
 
     // Le stock ou le solde a pu changer : on remet l'affichage à jour.
@@ -672,24 +784,30 @@ async function buyPack(packId, button) {
 }
 
 function openPackReveal(pack, result) {
-  const cards = result.cards || [];
+  const openings = result.openings && result.openings.length ? result.openings : [result.cards || []];
+  const multiple = openings.length > 1;
+  const total = openings.reduce((sum, list) => sum + list.length, 0);
+  let revealed = 0;
 
   openModal(`
     <div class="reveal">
-      <h2>${escapeHtml(pack.emoji)} ${escapeHtml(pack.name)}</h2>
+      <h2>${escapeHtml(pack.emoji)} ${escapeHtml(pack.name)}${multiple ? ` ×${openings.length}` : ""}</h2>
       <p class="muted">Clique sur les cartes pour les retourner.</p>
-      <div class="reveal-grid">
-        ${cards.map((card, index) => `
-          <div class="reveal-card" data-index="${index}" tabindex="0" role="button" aria-label="Retourner la carte ${index + 1}">
-            <div class="flip">
-              <div class="face back">${cardBack()}</div>
-              <div class="face front">
-                ${cardTile(card, { isNew: card.isNew })}
-                <div class="reveal-name">${escapeHtml(RARITY[rarityOf(card)].label)}</div>
+      ${openings.map((cards, o) => `
+        ${multiple ? `<h3 class="opening-title">Pack n° ${o + 1}</h3>` : ""}
+        <div class="reveal-grid">
+          ${cards.map((card, index) => `
+            <div class="reveal-card" data-opening="${o}" data-index="${index}" tabindex="0" role="button" aria-label="Retourner la carte ${index + 1}">
+              <div class="flip">
+                <div class="face back">${cardBack()}</div>
+                <div class="face front">
+                  ${cardTile(card, { isNew: card.isNew })}
+                  <div class="reveal-name">${escapeHtml(RARITY[rarityOf(card)].label)}</div>
+                </div>
               </div>
-            </div>
-          </div>`).join("")}
-      </div>
+            </div>`).join("")}
+        </div>`).join("")}
+      <div id="reveal-summary" class="reveal-summary hidden"></div>
       <div class="reveal-actions">
         <button type="button" class="button primary" id="reveal-all">Tout révéler</button>
         <button type="button" class="button secondary" id="reveal-done">Terminer</button>
@@ -701,10 +819,32 @@ function openPackReveal(pack, result) {
     }
   });
 
+  const showSummary = () => {
+    const all = openings.flat();
+    const byRarity = RARITY_ORDER.map((key) => ({
+      key,
+      count: all.filter((card) => rarityOf(card) === key).length
+    })).filter((item) => item.count > 0);
+    const fresh = all.filter((card) => card.isNew).length;
+
+    const box = $("#reveal-summary");
+    if (!box) return;
+    box.innerHTML = `
+      <strong>${total} carte${total > 1 ? "s" : ""}</strong> obtenue${total > 1 ? "s" : ""}
+      dont <strong>${fresh}</strong> nouvelle${fresh > 1 ? "s" : ""}
+      · dépensé : ${money(result.spent ?? pack.price)}
+      <div class="rarity-pills">${byRarity.map((item) =>
+        `<span class="pill" style="border-color:${RARITY[item.key].color};color:${RARITY[item.key].color}">${RARITY[item.key].label} ×${item.count}</span>`
+      ).join("")}</div>`;
+    box.classList.remove("hidden");
+  };
+
   const flip = (element) => {
     if (element.classList.contains("flipped")) return;
-    const card = cards[Number(element.dataset.index)];
+    const card = openings[Number(element.dataset.opening)][Number(element.dataset.index)];
     element.classList.add("flipped", `glow-${rarityOf(card)}`);
+    revealed += 1;
+    if (revealed === total) showSummary();
   };
 
   $$(".reveal-card").forEach((element) => {
@@ -718,7 +858,8 @@ function openPackReveal(pack, result) {
   });
 
   $("#reveal-all").addEventListener("click", () => {
-    $$(".reveal-card").forEach((element, i) => setTimeout(() => flip(element), i * 350));
+    const delay = multiple ? 120 : 350;
+    $$(".reveal-card").forEach((element, i) => setTimeout(() => flip(element), i * delay));
   });
   $("#reveal-done").addEventListener("click", () => closeModal());
 }
@@ -944,9 +1085,20 @@ function setupEvents() {
 
   // Boutique
   $("#shop-list").addEventListener("click", (event) => {
-    const button = event.target.closest("[data-pack]");
-    if (button) buyPack(Number(button.dataset.pack), button);
+    const step = event.target.closest("[data-step]");
+    const buy = event.target.closest("[data-buy-pack]");
+
+    if (step) {
+      const card = step.closest(".shop-card");
+      const id = Number(card.dataset.packId);
+      shopQty[id] = (shopQty[id] || 1) + Number(step.dataset.step);
+      updateShopRows();
+    } else if (buy) {
+      const id = Number(buy.dataset.buyPack);
+      buyPack(id, shopQty[id] || 1, buy);
+    }
   });
+  setInterval(updateShopCountdown, 1000);
 
   // Collection
   $("#collection-search").addEventListener("input", (event) => {
