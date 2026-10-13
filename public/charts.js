@@ -88,12 +88,12 @@ function renderLineChart(container, points, options = {}) {
       <text x="${padL - 8}" y="${gy}" font-size="11" fill="#94a3b8" text-anchor="end" dy=".35em">${fmtPrice(value)}</text>`;
   }
 
-  let ticks = "";
-  for (let k = 0; k <= 4; k += 1) {
-    const index = Math.round((k * (n - 1)) / 4);
-    const anchor = k === 0 ? "start" : k === 4 ? "end" : "middle";
-    ticks += `<text x="${x(index).toFixed(1)}" y="${H - 8}" font-size="11" fill="#94a3b8" text-anchor="${anchor}">${axisTimeLabel(points[index].t, range)}</text>`;
-  }
+  // Peu de points : on évite les repères en double qui se chevaucheraient.
+  const tickIndices = [...new Set([0, 1, 2, 3, 4].map((k) => Math.round((k * (n - 1)) / 4)))];
+  const ticks = tickIndices.map((index, position) => {
+    const anchor = position === 0 ? "start" : position === tickIndices.length - 1 ? "end" : "middle";
+    return `<text x="${x(index).toFixed(1)}" y="${H - 8}" font-size="11" fill="#94a3b8" text-anchor="${anchor}">${axisTimeLabel(points[index].t, range)}</text>`;
+  }).join("");
 
   const line = points.map((point, i) => `${i ? "L" : "M"}${x(i).toFixed(1)} ${y(point.p).toFixed(1)}`).join(" ");
   const area = `${line} L${x(n - 1).toFixed(1)} ${H - padB} L${x(0).toFixed(1)} ${H - padB} Z`;
