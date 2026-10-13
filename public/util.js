@@ -14,7 +14,7 @@ const state = {
   packs: [],
   titles: [],
   friends: { friends: [], incoming: [], outgoing: [] },
-  bazaar: { view: "buy", filter: { search: "", rarity: "", seller: "all", sort: "price-asc" } },
+  bazaar: { view: "buy", filter: { search: "", rarity: "", seller: "all", sort: "floor-asc" } },
   range: "6h",
   marketFilter: { search: "", sector: "", sort: "name" },
   collectionFilter: { search: "", rarity: "", ownedOnly: false }
@@ -105,7 +105,8 @@ async function api(url, options = {}) {
   const data = await response.json().catch(() => ({}));
 
   if (!response.ok) {
-    const message = data.error || "Une erreur est survenue.";
+    const message = (data.error || "Une erreur est survenue.") +
+      (data.detail ? ` (${data.detail})` : "");
     const suspended = response.status === 403 && /suspendu/i.test(message);
 
     // Session expirée ou compte suspendu pendant l'utilisation.
