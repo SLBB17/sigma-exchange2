@@ -150,7 +150,7 @@ async function openGiftModal(friendId, friendName) {
     <form id="gift-form" class="stack">
       <label for="gift-card">Carte à offrir</label>
       <select id="gift-card">${owned.map((card) =>
-        `<option value="${Number(card.id)}">${escapeHtml(card.emoji)} ${escapeHtml(card.name)} (${RARITY[rarityOf(card)].label}) ×${Number(card.quantity)}</option>`
+        `<option value="${escapeHtml(card.id)}">${escapeHtml(card.emoji)} ${escapeHtml(card.name)} (${RARITY[rarityOf(card)].label}) ×${Number(card.quantity)}</option>`
       ).join("")}</select>
       <button type="submit" class="button primary full">Offrir cette carte</button>
     </form>`);
@@ -164,7 +164,7 @@ async function openGiftModal(friendId, friendName) {
     try {
       const result = await api(`/api/friends/${friendId}/gift`, {
         method: "POST",
-        body: jsonBody({ cardId: Number($("#gift-card").value) })
+        body: jsonBody({ cardId: $("#gift-card").value })
       });
 
       closeModal();
