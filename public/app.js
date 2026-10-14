@@ -364,7 +364,10 @@ function companyModalHtml(asset) {
 
 function openCompany(symbol) {
   const asset = state.assets.find((item) => item.symbol === symbol);
-  if (!asset) return;
+  if (!asset) {
+    toast("Entreprise introuvable. Recharge la page puis réessaie.", "error");
+    return;
+  }
 
   openCompanySymbol = symbol;
 
@@ -904,7 +907,7 @@ function renderCollection() {
   $("#collection-list").innerHTML = list.length
     ? list.map((card) => {
         const quantity = Number(card.quantity);
-        return `<button type="button" class="collect-card" data-card="${Number(card.id)}"
+        return `<button type="button" class="collect-card" data-card="${escapeHtml(card.id)}"
           aria-label="${quantity > 0 ? escapeHtml(card.name) : "Carte non découverte"}">
           ${cardTile(card, { locked: quantity === 0, quantity })}
         </button>`;
@@ -920,8 +923,11 @@ async function loadCollection() {
 }
 
 function openCardDetail(cardId) {
-  const card = state.cards.find((item) => item.id === cardId);
-  if (!card) return;
+  const card = state.cards.find((item) => String(item.id) === String(cardId));
+  if (!card) {
+    toast("Carte introuvable. Recharge la page puis réessaie.", "error");
+    return;
+  }
 
   const quantity = Number(card.quantity);
   const key = rarityOf(card);
@@ -1115,7 +1121,7 @@ function setupEvents() {
   });
   $("#collection-list").addEventListener("click", (event) => {
     const button = event.target.closest("[data-card]");
-    if (button) openCardDetail(Number(button.dataset.card));
+    if (button) openCardDetail(button.dataset.card);
   });
 
   setupChat();
