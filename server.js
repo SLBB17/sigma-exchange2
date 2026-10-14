@@ -3209,6 +3209,28 @@ async function runDiagnostics() {
   if (cards && !cards.rows.length) record("Cartes : au moins une carte", false, "La table cards est vide.");
 
   await read("Cartes : possessions des joueurs", "SELECT user_id, card_id, quantity FROM user_cards LIMIT 1");
+
+  // Le site manipule des identifiants entiers : un autre type (texte, UUID...)
+  // rendrait certains clics ou achats inopérants.
+  try {
+    const types = await pool.query(
+      `SELECT table_name, data_type FROM information_schema.columns
+       WHERE table_schema = current_schema() AND column_name = 'id'
+         AND table_name IN ('users', 'cards', 'shop_packs', 'titles')`
+    );
+    const bad = types.rows.filter((row) => !["integer", "bigint", "smallint"].includes(row.data_type));
+    if (bad.length) {
+      record(
+        "Identifiants : entiers attendus",
+        false,
+        bad.map((row) => `${row.table_name}.id est de type ${row.data_type}`).join(" ; ")
+      );
+    } else {
+      record("Identifiants : entiers attendus", true);
+    }
+  } catch (err) {
+    record("Identifiants : entiers attendus", false, err.message);
+  }
   await read("Historique des transactions : lecture", "SELECT user_id, type, details FROM transactions LIMIT 1");
   await read(
     "Bazar : annonces regroupées",
