@@ -42,12 +42,12 @@ function cardMarketTile(entry) {
   const { card, floor, count, mineCount } = entry;
 
   return `<article class="listing">
-    <button type="button" class="listing-art" data-market="${Number(card.id)}" aria-label="Voir les offres pour ${escapeHtml(card.name)}">${cardTile(card)}</button>
+    <button type="button" class="listing-art" data-market="${escapeHtml(card.id)}" aria-label="Voir les offres pour ${escapeHtml(card.name)}">${cardTile(card)}</button>
     <div class="listing-info">
       <strong class="listing-price">dès ${money(floor)}</strong>
       <span class="muted">${count} offre${count > 1 ? "s" : ""}${mineCount ? ` · dont ${mineCount} à toi` : ""}</span>
     </div>
-    <button type="button" class="button primary small full" data-market="${Number(card.id)}">Voir les offres</button>
+    <button type="button" class="button primary small full" data-market="${escapeHtml(card.id)}">Voir les offres</button>
   </article>`;
 }
 
@@ -160,7 +160,7 @@ function renderCardMarket(data) {
 }
 
 async function openCardMarket(cardId) {
-  renderCardMarket(await api(`/api/bazaar/cards/${cardId}`));
+  renderCardMarket(await api(`/api/bazaar/cards/${encodeURIComponent(cardId)}`));
 }
 
 async function buyFromMarket(item, cardId, button) {
@@ -188,7 +188,7 @@ async function buyFromMarket(item, cardId, button) {
   refreshCardData();
 
   try {
-    const data = await api(`/api/bazaar/cards/${cardId}`);
+    const data = await api(`/api/bazaar/cards/${encodeURIComponent(cardId)}`);
     if (data.listings.length || data.owned > 0) renderCardMarket(data);
     else closeModal();
   } catch (error) {
@@ -338,15 +338,18 @@ function renderSellGrid() {
   $("#bazaar-sell").innerHTML = owned.length
     ? `<p class="muted">Choisis la carte à vendre : tu fixes toi-même le prix.</p>
        <div class="card-grid">${owned.map((card) => `
-         <button type="button" class="collect-card" data-sell="${Number(card.id)}" aria-label="Vendre ${escapeHtml(card.name)}">
+         <button type="button" class="collect-card" data-sell="${escapeHtml(card.id)}" aria-label="Vendre ${escapeHtml(card.name)}">
            ${cardTile(card, { quantity: Number(card.quantity) })}
          </button>`).join("")}</div>`
     : '<p class="muted">Tu ne possèdes encore aucune carte. Ouvre des packs dans la boutique !</p>';
 }
 
 async function openSellModal(cardId) {
-  const card = state.cards.find((item) => item.id === cardId);
-  if (!card) return;
+  const card = state.cards.find((item) => String(item.id) === String(cardId));
+  if (!card) {
+    toast("Carte introuvable dans ta collection. Recharge la page puis réessaie.", "error");
+    return;
+  }
 
   const owned = Number(card.quantity);
   const key = rarityOf(card);
@@ -387,7 +390,7 @@ async function openSellModal(cardId) {
   $("#sell-qty").addEventListener("input", updateNet);
   updateNet();
 
-  api(`/api/bazaar/price/${cardId}`).then((info) => {
+  api(`/api/bazaar/price/${encodeURIComponent(card.id)}`).then((info) => {
     if (!$("#sell-hint")) return;
 
     feeRate = Number(info.feeRate) || feeRate;
@@ -440,7 +443,7 @@ async function openSellModal(cardId) {
       const result = await api("/api/bazaar/list", {
         method: "POST",
         body: jsonBody({
-          cardId,
+          cardId: card.id,
           price: Number($("#sell-price").value),
           quantity: Number($("#sell-qty").value)
         })
@@ -495,7 +498,7 @@ function setupBazaar() {
 
   $("#bazaar-list").addEventListener("click", (event) => {
     const market = event.target.closest("[data-market]");
-    if (market) openCardMarket(Number(market.dataset.market)).catch(toastError);
+    if (market) openCardMarket(market.dataset.market).catch(toastError);
   });
 
   $("#bazaar-mine").addEventListener("click", (event) => {
@@ -513,6 +516,6 @@ function setupBazaar() {
 
   $("#bazaar-sell").addEventListener("click", (event) => {
     const button = event.target.closest("[data-sell]");
-    if (button) openSellModal(Number(button.dataset.sell));
+    if (button) openSellModal(button.dataset.sell).catch(toastError);
   });
 }
