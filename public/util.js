@@ -197,3 +197,27 @@ function setupModal() {
 function setBusy(button, busy) {
   if (button) button.disabled = busy;
 }
+
+/* ----- Erreurs inattendues : jamais de clic « muet » ----- */
+
+let lastClientError = 0;
+
+function reportClientError(message, file, line) {
+  console.error("Erreur dans la page :", message, file || "", line || "");
+
+  // Évite d'inonder l'écran si la même erreur se répète.
+  if (Date.now() - lastClientError < 3000) return;
+  lastClientError = Date.now();
+
+  const where = file ? ` (${String(file).split("/").pop()}:${line})` : "";
+  toast(`Erreur dans la page : ${message}${where}`, "error");
+}
+
+window.addEventListener("error", (event) => {
+  reportClientError(event.message, event.filename, event.lineno);
+});
+
+window.addEventListener("unhandledrejection", (event) => {
+  const reason = event.reason;
+  reportClientError(reason && reason.message ? reason.message : String(reason));
+});
